@@ -1,0 +1,7 @@
+python-telegram-bot
+openai
+pyyaml
+pydantic
+pydantic-settings
+python-dotenv
+tiktoken

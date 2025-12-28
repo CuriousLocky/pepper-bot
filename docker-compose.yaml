@@ -1,0 +1,7 @@
+services:
+  pepper-bot:
+    build: .
+    volumes:
+      - ./config:/app/config
+      - ./data:/app/data
+    restart: unless-stopped
