@@ -98,9 +98,6 @@ class PepperBot:
         text = update.message.text
         if is_command:
             text = text.replace('/pepper', '').strip()
-            if not text and not update.message.reply_to_message:
-                await update.message.reply_text("Hello! How can I help you?")
-                return
 
         referenced_msg = update.message.reply_to_message
         
