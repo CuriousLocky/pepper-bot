@@ -39,13 +39,15 @@ class PepperBot:
         try:
             # Get largest photo
             photo = message.photo[-1]
+            logger.info(f"Downloading image file_id: {photo.file_id}...")
             file = await context.bot.get_file(photo.file_id)
-            
+            logger.info("file got, downloading as bytearray...")
             # Download to memory
             byte_array = await file.download_as_bytearray()
             
             # Encode to base64
             b64_data = base64.b64encode(byte_array).decode('utf-8')
+            logger.info("Image successfully encoded to base64.")
             return f"data:image/jpeg;base64,{b64_data}"
         except Exception as e:
             logger.error(f"Error processing image: {e}")
@@ -84,6 +86,8 @@ class PepperBot:
         # Activation conditions: /pepper command OR reply to bot
         if not (is_command or is_reply_to_bot):
             return
+        
+        logger.info(f"Processing message from {chat_id} (User: {user.first_name})...")
 
         # Identify Thread
         thread_id = None
@@ -119,7 +123,9 @@ class PepperBot:
         # Check for image
         image_url = None
         if self.config.api.supports_vision and update.message.photo:
+            logger.info("Processing attached image...")
             image_url = await self._get_image_base64(update.message, context)
+            logger.info("Image processed.")
             if not text:
                 text = "[Image]"
         elif not text:
@@ -136,7 +142,9 @@ class PepperBot:
              # Check for image in referenced message
              ref_image_url = None
              if self.config.api.supports_vision and referenced_msg.photo:
+                 logger.info("Processing referenced message image...")
                  ref_image_url = await self._get_image_base64(referenced_msg, context)
+                 logger.info("Referenced image processed.")
 
              self.history.add_message(thread_id, Message(
                  role="user",
@@ -179,7 +187,9 @@ class PepperBot:
         ))
 
         # Send typing action
+        logger.info("Sending chat action (typing)...")
         await context.bot.send_chat_action(chat_id=chat_id, action="typing")
+        logger.info("Chat action sent.")
 
         # Get response
         # Get known users map for formatting
@@ -190,14 +200,18 @@ class PepperBot:
             model=self.config.api.model
         )
 
+        logger.info(f"Sending request to LLM (Payload messages: {len(messages_payload)})...")
         response_text = await self.llm.get_response(messages_payload, self.system_prompt_template)
+        logger.info("Received response from LLM.")
 
         # Send response
+        logger.info("Sending response to Telegram...")
         sent_msg = await context.bot.send_message(
             chat_id=chat_id, 
             text=response_text, 
             reply_to_message_id=msg_telegram_id
         )
+        logger.info(f"Response sent. Message ID: {sent_msg.message_id}")
 
         # Add assistant response to history
         assistant_internal_id = hist.get_next_message_id()
@@ -228,15 +242,18 @@ class PepperBot:
     async def shutdown(self, application: Application):
         logger.info("Gracefully shutting down...")
         # Ensure all data is saved
-        self.history._save()
+        self.history.save()
         self.memory._save_short_term()
         self.memory._save_long_term()
         self.memory._save_user_info()
         logger.info("Shutdown complete.")
 
-    def run(self):
-        application = ApplicationBuilder().token(self.config.bot.token).post_shutdown(self.shutdown).build()
+    async def post_init(self, application: Application):
+        bot_info = await application.bot.get_me()
+        logger.info(f"Post-init: Bot ID is {bot_info.id}, Username is {bot_info.username}")
 
+    def run(self):
+        application = ApplicationBuilder().token(self.config.bot.token).post_shutdown(self.shutdown).post_init(self.post_init).connect_timeout(30.0).read_timeout(30.0).write_timeout(30.0).build()
         application.add_handler(CommandHandler("start", self.start))
         application.add_handler(CommandHandler("help", self.help_command))
         # Handle /pepper command
@@ -251,7 +268,7 @@ class PepperBot:
             application.job_queue.run_repeating(self.scheduled_maintenance, interval=3600, first=10)
 
         logger.info("Bot started polling...")
-        application.run_polling()
+        application.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     bot = PepperBot()

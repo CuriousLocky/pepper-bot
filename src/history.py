@@ -116,7 +116,7 @@ class HistoryManager:
                 if msg.telegram_id:
                     self.message_map[msg.telegram_id] = thread_id
 
-    def _save(self):
+    def save(self):
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
         data = {k: v.model_dump(mode='json') for k, v in self.histories.items()}
         self.storage_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -124,7 +124,6 @@ class HistoryManager:
     def create_thread(self, chat_id: int) -> ChatHistory:
         hist = ChatHistory(chat_id=chat_id, messages=[], last_updated=datetime.now())
         self.histories[hist.id] = hist
-        self._save()
         return hist
 
     def get_thread(self, thread_id: str) -> Optional[ChatHistory]:
@@ -142,8 +141,6 @@ class HistoryManager:
             # Update map using telegram_id
             if message.telegram_id:
                 self.message_map[message.telegram_id] = thread_id
-            
-            self._save()
 
     def clean_expired(self, hours: int):
         now = datetime.now()
@@ -154,6 +151,3 @@ class HistoryManager:
                 if msg.telegram_id and msg.telegram_id in self.message_map:
                     del self.message_map[msg.telegram_id]
             del self.histories[tid]
-        
-        if expired_ids:
-            self._save()
