@@ -2,6 +2,7 @@ import logging
 import asyncio
 import base64
 import io
+import re
 from datetime import datetime
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters, Application
@@ -57,7 +58,14 @@ class PepperBot:
         await update.message.reply_text("I am Pepper. I can chat with you and remember things. Use /pepper to wake me up!")
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if not update.message or not update.message.text:
+        if not update.message:
+            return
+
+        # Extract text content (message text or caption)
+        msg_text = update.message.text or update.message.caption or ""
+        
+        # If no text/caption and no photo, ignore
+        if not msg_text and not update.message.photo:
             return
 
         chat_id = update.effective_chat.id
@@ -71,7 +79,7 @@ class PepperBot:
         if update.message.reply_to_message and update.message.reply_to_message.from_user.id == context.bot.id:
             is_reply_to_bot = True
 
-        is_command = update.message.text.startswith('/pepper')
+        is_command = msg_text.startswith('/pepper')
         
         # Activation conditions: /pepper command OR reply to bot
         if not (is_command or is_reply_to_bot):
@@ -80,32 +88,48 @@ class PepperBot:
         # Identify Thread
         thread_id = None
         hist = None
-        if is_command:
-            # Create new thread for new activation
-            hist = self.history.create_thread(chat_id)
-            thread_id = hist.id
-        elif is_reply_to_bot:
-            # Find existing thread
+        
+        if is_reply_to_bot:
+            # Try to find existing thread
             reply_to_telegram_id = update.message.reply_to_message.message_id
             thread_id = self.history.get_thread_id_by_message_id(reply_to_telegram_id)
-            if not thread_id:
+            
+            if thread_id:
+                hist = self.history.get_thread(thread_id)
+            else:
                 # Thread not found or expired
-                logger.info(f"Thread not found for reply to message {reply_to_telegram_id}")
-                return 
-            hist = self.history.get_thread(thread_id)
+                # If the user explicitly used the command, we can start a new thread.
+                if is_command:
+                    hist = self.history.create_thread(chat_id)
+                    thread_id = hist.id
+                else:
+                    logger.info(f"Thread not found for reply to message {reply_to_telegram_id}")
+                    return
+        elif is_command:
+            # New command activation -> New thread
+            hist = self.history.create_thread(chat_id)
+            thread_id = hist.id
 
         # Prepare message content (strip command if present)
-        text = update.message.text
+        text = msg_text
         if is_command:
-            text = text.replace('/pepper', '').strip()
+            # Remove /pepper and optional @botname, plus leading whitespace
+            text = re.sub(r'^/pepper(?:@\w+)?\s*', '', text, count=1)
+
+        # Check for image
+        image_url = None
+        if self.config.api.supports_vision and update.message.photo:
+            image_url = await self._get_image_base64(update.message, context)
+            if not text:
+                text = "[Image]"
+        elif not text:
+             # No text (after stripping) and no image -> Generic greeting
+             text = "Hello!"
 
         referenced_msg = update.message.reply_to_message
         
-        # If activated by /pepper and replying to someone else (not bot), we might need to ingest that message.
-        if is_command and referenced_msg:
-             # Check if ref_id is already in history (of the new thread? It's new so empty)
-             # But we should check if we really need to add it. Since it's a new thread, yes.
-             
+        # If activated by /pepper and replying to someone else (NOT bot), we ingest that message.
+        if is_command and referenced_msg and not is_reply_to_bot:
              # Add referenced message as Msg 0
              ref_user_name = referenced_msg.from_user.first_name
              
@@ -134,20 +158,13 @@ class PepperBot:
         # Determine reply target (internal ID)
         internal_reply_to_id = None
         if referenced_msg:
-            if is_command:
-                 # If /pepper reply, we just added it as 0
+            if is_command and not is_reply_to_bot:
+                 # If /pepper reply to user, we added ref as 0
                  internal_reply_to_id = 0
             elif is_reply_to_bot:
                  # Reply to bot in existing thread
                  ref_telegram_id = referenced_msg.message_id
                  internal_reply_to_id = hist.get_internal_id(ref_telegram_id)
-        
-        # Check for image
-        image_url = None
-        if self.config.api.supports_vision and update.message.photo:
-            image_url = await self._get_image_base64(update.message, context)
-            if not text:
-                text = update.message.caption or "[Image]"
         
         self.history.add_message(thread_id, Message(
             role="user",
@@ -225,8 +242,9 @@ class PepperBot:
         # Handle /pepper command
         application.add_handler(CommandHandler("pepper", self.handle_message))
         # Handle replies (messages that don't start with /pepper but reply to bot are handled in handle_message logic)
-        # We need a message handler that catches text messages AND photos
-        application.add_handler(MessageHandler((filters.TEXT | filters.PHOTO) & (~filters.COMMAND), self.handle_message))
+        # We need a message handler that catches text messages AND photos. 
+        # We allow commands here to ensure captioned images with /pepper (which might be skipped by CommandHandler) are caught.
+        application.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, self.handle_message))
 
         # Job queue for maintenance (every hour)
         if application.job_queue:
