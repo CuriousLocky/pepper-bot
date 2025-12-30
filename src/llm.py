@@ -22,9 +22,13 @@ class LLMClient:
         if not text:
             return ""
         # Remove redundant formatting info like "[msg 8] Pepper (reply to msg 7): "
-        # Matches "[msg <digits>] <any name>[: or (reply...):]"
-        pattern = r'^\[msg\s+\d+\]\s+[^:]+:\s*'
-        return re.sub(pattern, '', text, count=1).strip()
+        # Matches "(reply to msg XX): "
+        pattern = r"\(reply to msg \d+\):\s*"
+        
+        # Remove all content before the first occurrence of the pattern        
+        cleaned_text = re.sub(f".*?{pattern}", "", text).strip()
+        
+        return cleaned_text
 
     def _define_tools(self) -> List[Dict[str, Any]]:
         return [
