@@ -1,4 +1,5 @@
 import json
+import re
 import yaml
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -63,8 +64,16 @@ class MemoryManager:
         self.user_info_path.parent.mkdir(parents=True, exist_ok=True)
         data = {str(uid): entry.model_dump() for uid, entry in self.user_info.items()}
         self.user_info_path.write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")
+        
+    def _clean_short_term_content(self, content: str) -> str:
+        # Clean redundant whitespace and timestamp patterns if present
+        # Matches patterns like "[YYYY-MM-DD HH:MM]" or similar at the start of the content
+        pattern = r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\]\s*"
+        cleaned_content = re.sub(pattern, "", content).strip()
+        return cleaned_content
 
     def add_short_term_event(self, content: str):
+        content = self._clean_short_term_content(content)
         self.short_term_mem.append(MemoryEvent(content=content, timestamp=datetime.now()))
         self._save_short_term()
 
@@ -75,8 +84,8 @@ class MemoryManager:
     def get_short_term_str(self) -> str:
         if not self.short_term_mem:
             return "No short-term memories."
-        # Use a short timestamp format: [MM-DD HH:MM]
-        return "\n".join([f"- [{e.timestamp.strftime('%m-%d %H:%M')}] {e.content}" for e in self.short_term_mem])
+        # Use a short timestamp format: [YYYY-MM-DD HH:MM]
+        return "\n".join([f"- [{e.timestamp.strftime('%Y-%m-%d %H:%M')}] {e.content}" for e in self.short_term_mem])
 
     def get_long_term_str(self) -> str:
         return self.long_term_mem if self.long_term_mem else "No long-term memories."
