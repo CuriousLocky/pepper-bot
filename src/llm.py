@@ -2,9 +2,11 @@ import json
 import re
 from datetime import datetime
 from openai import AsyncOpenAI
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from config import Config
 from memory import MemoryManager
+from websearch import web_search
+from get_url_content import get_url_content
 
 class LLMClient:
     def __init__(self, config: Config, memory_manager: MemoryManager):
@@ -22,11 +24,12 @@ class LLMClient:
         if not text:
             return ""
         # Remove redundant formatting info like "[msg 8] Pepper (reply to msg 7): "
-        # Matches "(reply to msg XX): "
-        pattern = r"\(reply to msg \d+\):\s*"
+        # Matches leading pattern of optional "[msg XX]" + optional Name + optional "(reply to msg XX)" + optional ":"
+        # All parts are optional and separated by optional spaces
+        pattern = r'^(?:\s*\[msg \d+\]\s*)?(?:[A-Za-z0-9_ ]+\s*)?(?:\(reply to msg \d+\)\s*)?:\s*'
         
-        # Remove all content before the first occurrence of the pattern        
-        cleaned_text = re.sub(f".*?{pattern}", "", text).strip()
+        cleaned_text = re.sub(pattern, '', text)
+        cleaned_text = cleaned_text.strip()
         
         return cleaned_text
 
@@ -90,6 +93,40 @@ class LLMClient:
                         "required": ["user_id", "name", "description"]
                     }
                 }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "web_search",
+                    "description": "Search the web for current information.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string",
+                                "description": "The search query."
+                            }
+                        },
+                        "required": ["query"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_url_content",
+                    "description": "Fetch and read the text content of a specific webpage URL.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "url": {
+                                "type": "string",
+                                "description": "The URL of the webpage to read."
+                            }
+                        },
+                        "required": ["url"]
+                    }
+                }
             }
         ]
 
@@ -114,6 +151,11 @@ class LLMClient:
                         function_args["description"]
                     )
                     tool_output = "User info updated successfully."
+                elif function_name == "web_search":
+                    search_results = web_search(function_args["query"], self.config.search)
+                    tool_output = json.dumps(search_results, ensure_ascii=False)
+                elif function_name == "get_url_content":
+                    tool_output = get_url_content(function_args["url"])
                 else:
                     tool_output = f"Unknown tool: {function_name}"
             except Exception as e:
@@ -129,7 +171,7 @@ class LLMClient:
 
     async def get_response(self, 
                            messages: List[Dict[str, Any]], 
-                           system_prompt_template: str) -> str:
+                           system_prompt_template: str) -> Tuple[str, List[Dict[str, Any]]]:
         
         system_prompt = system_prompt_template.replace(
             "{{date-time}}", datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -142,6 +184,7 @@ class LLMClient:
         )
 
         full_messages = [{"role": "system", "content": system_prompt}] + messages
+        new_messages = []
 
         try:
             response = await self.client.chat.completions.create(
@@ -154,24 +197,31 @@ class LLMClient:
             )
             
             response_message = response.choices[0].message
+            new_messages.append(response_message.model_dump())
 
-            if response_message.tool_calls:
-                full_messages.append(response_message)
+            while response_message.tool_calls:
+                full_messages.append(response_message.model_dump())
+                
                 tool_results = await self._execute_tools(response_message.tool_calls)
                 full_messages.extend(tool_results)
+                new_messages.extend(tool_results)
 
-                final_response = await self.client.chat.completions.create(
+                # Get next response from AI
+                response = await self.client.chat.completions.create(
                     model=self.config.api.model,
                     messages=full_messages,
+                    tools=self.chat_tools,
+                    tool_choice="auto",
                     temperature=self.config.model_params.temperature,
                     max_tokens=self.config.context.max_ai_response_token
                 )
-                return self._clean_response(final_response.choices[0].message.content or "")
+                response_message = response.choices[0].message
+                new_messages.append(response_message.model_dump())
             
-            return self._clean_response(response_message.content or "")
+            return self._clean_response(response_message.content or ""), new_messages
 
         except Exception as e:
-            return f"Error communicating with AI: {str(e)}"
+            return f"Error communicating with AI: {str(e)}", []
 
     async def consolidate_memory(self, expired_events: List[Any], system_prompt_template: str):
         if not expired_events:

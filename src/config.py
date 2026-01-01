@@ -26,12 +26,18 @@ class ToolSettings(BaseModel):
     memory_capacity: int = 100
     short_term_mem_expiration_days: int = 1
 
+class SearchConfig(BaseModel):
+    provider: str = "duckduckgo" # "duckduckgo" or "google"
+    google_api_key: Optional[str] = None
+    google_cse_id: Optional[str] = None
+
 class Config(BaseModel):
     bot: BotConfig
     api: ApiConfig
     model_params: ModelParams
     context: ContextConfig
     tools: ToolSettings
+    search: SearchConfig = Field(default_factory=SearchConfig)
 
 def load_config(config_path: str = "config/config.yaml") -> Config:
     with open(config_path, "r", encoding="utf-8") as f:

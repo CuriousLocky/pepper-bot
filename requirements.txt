@@ -5,3 +5,7 @@ pydantic
 pydantic-settings
 python-dotenv
 tiktoken
+duckduckgo_search
+trafilatura
+requests
+beautifulsoup4

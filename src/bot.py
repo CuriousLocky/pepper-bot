@@ -201,8 +201,8 @@ class PepperBot:
         )
 
         logger.info(f"Sending request to LLM (Payload messages: {len(messages_payload)})...")
-        response_text = await self.llm.get_response(messages_payload, self.system_prompt_template)
-        logger.info("Received response from LLM.")
+        response_text, new_messages = await self.llm.get_response(messages_payload, self.system_prompt_template)
+        logger.info(f"Received response from LLM with {len(new_messages)} new messages.")
 
         # Send response
         logger.info("Sending response to Telegram...")
@@ -213,18 +213,42 @@ class PepperBot:
         )
         logger.info(f"Response sent. Message ID: {sent_msg.message_id}")
 
-        # Add assistant response to history
-        assistant_internal_id = hist.get_next_message_id()
-        self.history.add_message(thread_id, Message(
-            role="assistant",
-            content=response_text,
-            message_id=assistant_internal_id,
-            telegram_id=sent_msg.message_id,
-            user_id=context.bot.id,
-            user_name="Pepper", # Or config bot name
-            reply_to_id=internal_msg_id,
-            timestamp=datetime.now()
-        ))
+        # Add all generated messages to history
+        for i, msg_dict in enumerate(new_messages):
+            is_last = (i == len(new_messages) - 1)
+            assistant_internal_id = hist.get_next_message_id()
+            
+            # Determine role and content
+            role = msg_dict.get("role")
+            content = msg_dict.get("content")
+            
+            # If it's the last message (the final response), we use the response_text 
+            # (which is cleaned) and associate it with the telegram_id.
+            if is_last and role == "assistant":
+                self.history.add_message(thread_id, Message(
+                    role="assistant",
+                    content=response_text,
+                    message_id=assistant_internal_id,
+                    telegram_id=sent_msg.message_id,
+                    user_id=context.bot.id,
+                    user_name="Pepper",
+                    reply_to_id=internal_msg_id,
+                    timestamp=datetime.now()
+                ))
+            else:
+                # Intermediate messages (tool calls or tool results)
+                self.history.add_message(thread_id, Message(
+                    role=role,
+                    content=content,
+                    message_id=assistant_internal_id,
+                    telegram_id=None,
+                    user_id=context.bot.id if role == "assistant" else None,
+                    user_name="Pepper" if role == "assistant" else "System",
+                    reply_to_id=internal_msg_id if i == 0 else None, # Only first intermediate replies to user
+                    timestamp=datetime.now(),
+                    tool_calls=msg_dict.get("tool_calls"),
+                    tool_call_id=msg_dict.get("tool_call_id")
+                ))
 
     async def scheduled_maintenance(self, context: ContextTypes.DEFAULT_TYPE):
         # 1. Clean expired chat histories
@@ -268,7 +292,7 @@ class PepperBot:
             application.job_queue.run_repeating(self.scheduled_maintenance, interval=3600, first=10)
 
         logger.info("Bot started polling...")
-        application.run_polling(drop_pending_updates=True)
+        application.run_polling(drop_pending_updates=False)
 
 if __name__ == "__main__":
     bot = PepperBot()

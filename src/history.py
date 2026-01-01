@@ -7,8 +7,8 @@ from typing import List, Dict, Optional, Any
 from pydantic import BaseModel, Field
 
 class Message(BaseModel):
-    role: str # 'user', 'assistant', 'system'
-    content: str
+    role: str # 'user', 'assistant', 'system', 'tool'
+    content: Optional[str] = None
     message_id: int # Internal sequential ID (0, 1, 2...)
     telegram_id: Optional[int] = None # Original Telegram Message ID
     user_id: Optional[int] = None
@@ -16,6 +16,8 @@ class Message(BaseModel):
     reply_to_id: Optional[int] = None # Internal ID of the message replied to
     timestamp: datetime
     image_url: Optional[str] = None # For multimodal support
+    tool_calls: Optional[List[Dict[str, Any]]] = None
+    tool_call_id: Optional[str] = None
 
 class ChatHistory(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -45,41 +47,57 @@ class ChatHistory(BaseModel):
         
         # Iterate backwards to keep most recent messages
         for msg in reversed(self.messages):
-            content = msg.content
-            # Reply to ID is already internal
-            reply_str = f" (reply to msg {msg.reply_to_id})" if msg.reply_to_id is not None else ""
-            
-            if msg.role == "user" and msg.user_id:
-                if msg.user_id in known_users:
-                    display_name = known_users[msg.user_id]
-                else:
-                    display_name = f"unknown-user {msg.user_id}"
+            # Special handling for tool and assistant messages with tool calls
+            if msg.role == "tool":
+                msg_obj = {
+                    "role": "tool",
+                    "content": msg.content,
+                    "tool_call_id": msg.tool_call_id
+                }
+                # Approximate tokens for tool message
+                msg_tokens = 4 + len(encoding.encode(msg.content or "")) + len(encoding.encode(msg.tool_call_id or ""))
+            elif msg.role == "assistant" and msg.tool_calls:
+                msg_obj = {
+                    "role": "assistant",
+                    "content": msg.content,
+                    "tool_calls": msg.tool_calls
+                }
+                # Approximate tokens
+                msg_tokens = 4 + len(encoding.encode(msg.content or "")) + 50 # 50 for tool_calls overhead
             else:
-                display_name = msg.user_name
+                # Regular user or assistant message
+                content = msg.content or ""
+                # Reply to ID is already internal
+                reply_str = f" (reply to msg {msg.reply_to_id})" if msg.reply_to_id is not None else ""
+                
+                if msg.role == "user" and msg.user_id:
+                    if msg.user_id in known_users:
+                        display_name = known_users[msg.user_id]
+                    else:
+                        display_name = f"unknown-user {msg.user_id}"
+                else:
+                    display_name = msg.user_name
 
-            display_content = f"[msg {msg.message_id}] {display_name}{reply_str}: {content}"
-            
-            # Estimate tokens for this message
-            # OpenAI overhead: ~4 tokens per message + tokens in content + role + name
-            # Image tokens: rough estimate 85 (low detail) if image_url exists
-            msg_tokens = 4 
-            msg_tokens += len(encoding.encode(display_content))
-            msg_tokens += len(encoding.encode(msg.role))
-            if msg.image_url:
-                msg_tokens += 85
+                display_content = f"[msg {msg.message_id}] {display_name}{reply_str}: {content}"
+                
+                # Estimate tokens for this message
+                msg_tokens = 4 
+                msg_tokens += len(encoding.encode(display_content))
+                msg_tokens += len(encoding.encode(msg.role))
+                if msg.image_url:
+                    msg_tokens += 85
+                
+                msg_obj = {"role": msg.role, "content": display_content}
+                if msg.image_url:
+                    msg_obj["content"] = [
+                        {"type": "text", "text": display_content},
+                        {"type": "image_url", "image_url": {"url": msg.image_url}}
+                    ]
             
             if current_tokens + msg_tokens > token_limit:
                 break
             
             current_tokens += msg_tokens
-            
-            # OpenAI format
-            msg_obj = {"role": msg.role, "content": display_content}
-            if msg.image_url:
-                msg_obj["content"] = [
-                    {"type": "text", "text": display_content},
-                    {"type": "image_url", "image_url": {"url": msg.image_url}}
-                ]
             formatted_messages.append(msg_obj)
             
         return formatted_messages[::-1]
