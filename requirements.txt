@@ -9,3 +9,4 @@ duckduckgo_search
 trafilatura
 requests
 beautifulsoup4
+python-telegram-bot[job-queue]
