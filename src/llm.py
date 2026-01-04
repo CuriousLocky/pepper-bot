@@ -127,10 +127,47 @@ class LLMClient:
                         "required": ["url"]
                     }
                 }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "set_scheduled_task",
+                    "description": "Schedule a task to be executed later.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "time_in_minute": {
+                                "type": "integer",
+                                "description": "Delay in minutes before execution. Max at 1440 (24 hours)."
+                            },
+                            "title": {
+                                "type": "string",
+                                "description": "Title of the task."
+                            },
+                            "content": {
+                                "type": "string",
+                                "description": "Content/Instruction for the task."
+                            }
+                        },
+                        "required": ["time_in_minute", "title", "content"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_scheduled_task_list",
+                    "description": "Get the list of currently scheduled tasks.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {},
+                        "required": []
+                    }
+                }
             }
         ]
 
-    async def _execute_tools(self, tool_calls: List[Any]) -> List[Dict[str, Any]]:
+    async def _execute_tools(self, tool_calls: List[Any], tool_context: Dict[str, Any] = None) -> List[Dict[str, Any]]:
         results = []
         for tool_call in tool_calls:
             function_name = tool_call.function.name
@@ -156,6 +193,20 @@ class LLMClient:
                     tool_output = json.dumps(search_results, ensure_ascii=False)
                 elif function_name == "get_url_content":
                     tool_output = get_url_content(function_args["url"])
+                elif function_name == "set_scheduled_task":
+                    if tool_context and "schedule_func" in tool_context:
+                        tool_output = await tool_context["schedule_func"](
+                            function_args["time_in_minute"],
+                            function_args["title"],
+                            function_args["content"]
+                        )
+                    else:
+                        tool_output = "Error: Scheduling context not available."
+                elif function_name == "get_scheduled_task_list":
+                    if tool_context and "list_func" in tool_context:
+                        tool_output = await tool_context["list_func"]()
+                    else:
+                        tool_output = "Error: Scheduling context not available."
                 else:
                     tool_output = f"Unknown tool: {function_name}"
             except Exception as e:
@@ -171,7 +222,8 @@ class LLMClient:
 
     async def get_response(self, 
                            messages: List[Dict[str, Any]], 
-                           system_prompt_template: str) -> Tuple[str, List[Dict[str, Any]]]:
+                           system_prompt_template: str,
+                           tool_context: Dict[str, Any] = None) -> Tuple[str, List[Dict[str, Any]]]:
         
         system_prompt = system_prompt_template.replace(
             "{{date-time}}", datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -203,7 +255,7 @@ class LLMClient:
             while response_message.tool_calls:
                 full_messages.append(response_message.model_dump())
                 
-                tool_results = await self._execute_tools(response_message.tool_calls)
+                tool_results = await self._execute_tools(response_message.tool_calls, tool_context)
                 full_messages.extend(tool_results)
                 new_messages.extend(tool_results)
 

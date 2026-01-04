@@ -59,6 +59,117 @@ class PepperBot:
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("I am Pepper. I can chat with you and remember things. Use /pepper to wake me up!")
 
+    async def execute_task_callback(self, context: ContextTypes.DEFAULT_TYPE):
+        job = context.job
+        data = job.data
+        chat_id = job.chat_id
+        title = data.get('title')
+        content = data.get('content')
+        
+        logger.info(f"Executing scheduled task: {title} for chat {chat_id}")
+        
+        # Create new thread
+        hist = self.history.create_thread(chat_id)
+        thread_id = hist.id
+        
+        # Prepare message payload
+        prompt = f"Scheduled Task Triggered:\nTitle: {title}\nContent: {content}"
+        
+        # We need to simulate a user message or system injection. 
+        # Since it's a new thread, we can start with a user message from "System" or the User.
+        # Let's add it as a System/User message to history first.
+        internal_msg_id = hist.get_next_message_id()
+        self.history.add_message(thread_id, Message(
+            role="user", 
+            content=prompt,
+            message_id=internal_msg_id,
+            user_name="System",
+            timestamp=datetime.now()
+        ))
+        
+        known_users_map = {uid: entry.name for uid, entry in self.memory.user_info.items()}
+        messages_payload = hist.format_for_llm(
+            known_users_map, 
+            token_limit=self.config.context.max_context_window,
+            model=self.config.api.model
+        )
+        
+        # Define tool context for the task execution (it can schedule more tasks!)
+        tool_context = {
+            "schedule_func": lambda d, t, c: self.schedule_task(context, d, t, c, chat_id),
+            "list_func": lambda: self.get_scheduled_tasks(context),
+            "chat_id": chat_id
+        }
+
+        response_text, new_messages = await self.llm.get_response(
+            messages_payload, 
+            self.system_prompt_template,
+            tool_context=tool_context
+        )
+        
+        # Send response
+        sent_msg = await context.bot.send_message(chat_id=chat_id, text=response_text)
+        
+        # Add Assistant response to history
+        assistant_internal_id = hist.get_next_message_id()
+        self.history.add_message(thread_id, Message(
+            role="assistant",
+            content=response_text,
+            message_id=assistant_internal_id,
+            telegram_id=sent_msg.message_id,
+            user_id=context.bot.id,
+            user_name="Pepper",
+            reply_to_id=internal_msg_id,
+            timestamp=datetime.now()
+        ))
+        
+        # Save history for the new thread (and any others)
+        self.history.save()
+
+    async def schedule_task(self, context, delay_minutes: int, title: str, content: str, chat_id: int) -> str:
+        try:
+            # Check for reasonable delay to avoid overflow or errors
+            if delay_minutes < 0:
+                return "Error: Delay cannot be negative."
+            if delay_minutes > 1440:  # 24 hours
+                return "Error: Delay cannot exceed 1440 minutes (24 hours)."
+            
+            context.job_queue.run_once(
+                self.execute_task_callback, 
+                delay_minutes * 60, 
+                chat_id=chat_id, 
+                data={'title': title, 'content': content}
+            )
+            return f"Task '{title}' scheduled in {delay_minutes} minutes."
+        except Exception as e:
+            logger.error(f"Error scheduling task: {e}")
+            return f"Error scheduling task: {e}"
+
+    async def get_scheduled_tasks(self, context) -> str:
+        jobs = context.job_queue.jobs()
+        tasks = []
+        now = datetime.now()
+        # jobs is a tuple of Job
+        for job in jobs:
+            # Filter for our task callback
+            if job.callback == self.execute_task_callback:
+                # job.next_t is datetime.datetime (aware or naive depending on PTB config, usually aware UTC)
+                # Ensure compatibility
+                next_t = job.next_t
+                if next_t:
+                    remaining = next_t.replace(tzinfo=None) - datetime.utcnow() # assuming UTC internal
+                    # PTB usually uses UTC. Let's check if aware.
+                    if next_t.tzinfo:
+                         remaining = next_t - datetime.now(next_t.tzinfo)
+                    
+                    minutes_remaining = int(remaining.total_seconds() / 60)
+                    title = job.data.get('title', 'Untitled')
+                    tasks.append(f"- {title} (in {minutes_remaining} min)")
+        
+        if not tasks:
+            return "No scheduled tasks."
+        return "Scheduled Tasks:\n" + "\n".join(tasks)
+
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not update.message:
             return
@@ -200,8 +311,19 @@ class PepperBot:
             model=self.config.api.model
         )
 
+        # Prepare Tool Context
+        tool_context = {
+            "schedule_func": lambda d, t, c: self.schedule_task(context, d, t, c, chat_id),
+            "list_func": lambda: self.get_scheduled_tasks(context),
+            "chat_id": chat_id
+        }
+
         logger.info(f"Sending request to LLM (Payload messages: {len(messages_payload)})...")
-        response_text, new_messages = await self.llm.get_response(messages_payload, self.system_prompt_template)
+        response_text, new_messages = await self.llm.get_response(
+            messages_payload, 
+            self.system_prompt_template,
+            tool_context=tool_context
+        )
         logger.info(f"Received response from LLM with {len(new_messages)} new messages.")
 
         # Send response
