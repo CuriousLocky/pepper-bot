@@ -24,9 +24,14 @@ class LLMClient:
         if not text:
             return ""
         # Remove redundant formatting info like "[msg 8] Pepper (reply to msg 7): "
-        # Matches leading pattern of optional "[msg XX]" + optional Name + optional "(reply to msg XX)" + optional ":"
-        # All parts are optional and separated by optional spaces
-        pattern = r'^(?:\s*\[msg \d+\]\s*)?(?:[A-Za-z0-9_ ]+\s*)?(?:\(reply to msg \d+\)\s*)?:\s*'
+        # Matches leading pattern of optional "[msg XX]" + optional Name/Nickname + optional "(reply to msg XX)" + optional ":"
+        
+        # Build list of names to filter: primary name + nicknames
+        names = [self.config.bot.name] + self.config.bot.nicknames
+        # Escape names for regex
+        names_pattern = "|".join([re.escape(n) for n in names])
+        
+        pattern = rf'^(?:\s*\[msg \d+\]\s*)?(?:(?:{names_pattern})\s*)?(?:\(reply to msg \d+\)\s*)?:\s*'
         
         cleaned_text = re.sub(pattern, '', text)
         cleaned_text = cleaned_text.strip()

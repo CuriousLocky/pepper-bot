@@ -6,6 +6,9 @@ from typing import List, Optional
 class BotConfig(BaseModel):
     token: str
     chat_whitelist: List[int] = []
+    command: str = "pepper"
+    name: str = "Pepper"
+    nicknames: List[str] = []
 
 class ApiConfig(BaseModel):
     url: str

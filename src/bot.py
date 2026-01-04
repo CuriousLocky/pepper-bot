@@ -54,10 +54,10 @@ class PepperBot:
             return None
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        await update.message.reply_text("Hello! I'm Pepper. Mention me or reply to my messages to chat!")
+        await update.message.reply_text(f"Hello! I'm {self.config.bot.name}. Mention me or reply to my messages to chat!")
 
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        await update.message.reply_text("I am Pepper. I can chat with you and remember things. Use /pepper to wake me up!")
+        await update.message.reply_text(f"I am {self.config.bot.name}. I can chat with you and remember things. Use /{self.config.bot.command} to wake me up!")
 
     async def execute_task_callback(self, context: ContextTypes.DEFAULT_TYPE):
         job = context.job
@@ -118,7 +118,7 @@ class PepperBot:
             message_id=assistant_internal_id,
             telegram_id=sent_msg.message_id,
             user_id=context.bot.id,
-            user_name="Pepper",
+            user_name=self.config.bot.name,
             reply_to_id=internal_msg_id,
             timestamp=datetime.now()
         ))
@@ -192,9 +192,9 @@ class PepperBot:
         if update.message.reply_to_message and update.message.reply_to_message.from_user.id == context.bot.id:
             is_reply_to_bot = True
 
-        is_command = msg_text.startswith('/pepper')
+        is_command = msg_text.startswith(f"/{self.config.bot.command}")
         
-        # Activation conditions: /pepper command OR reply to bot
+        # Activation conditions: /command OR reply to bot
         if not (is_command or is_reply_to_bot):
             return
         
@@ -228,8 +228,8 @@ class PepperBot:
         # Prepare message content (strip command if present)
         text = msg_text
         if is_command:
-            # Remove /pepper and optional @botname, plus leading whitespace
-            text = re.sub(r'^/pepper(?:@\w+)?\s*', '', text, count=1)
+            # Remove command and optional @botname, plus leading whitespace
+            text = re.sub(rf'^/{self.config.bot.command}(?:@\w+)?\s*', '', text, count=1)
 
         # Check for image
         image_url = None
@@ -245,7 +245,7 @@ class PepperBot:
 
         referenced_msg = update.message.reply_to_message
         
-        # If activated by /pepper and replying to someone else (NOT bot), we ingest that message.
+        # If activated by /command and replying to someone else (NOT bot), we ingest that message.
         if is_command and referenced_msg and not is_reply_to_bot:
              # Add referenced message as Msg 0
              ref_user_name = referenced_msg.from_user.first_name
@@ -278,7 +278,7 @@ class PepperBot:
         internal_reply_to_id = None
         if referenced_msg:
             if is_command and not is_reply_to_bot:
-                 # If /pepper reply to user, we added ref as 0
+                 # If /command reply to user, we added ref as 0
                  internal_reply_to_id = 0
             elif is_reply_to_bot:
                  # Reply to bot in existing thread
@@ -353,7 +353,7 @@ class PepperBot:
                     message_id=assistant_internal_id,
                     telegram_id=sent_msg.message_id,
                     user_id=context.bot.id,
-                    user_name="Pepper",
+                    user_name=self.config.bot.name,
                     reply_to_id=internal_msg_id,
                     timestamp=datetime.now()
                 ))
@@ -365,7 +365,7 @@ class PepperBot:
                     message_id=assistant_internal_id,
                     telegram_id=None,
                     user_id=context.bot.id if role == "assistant" else None,
-                    user_name="Pepper" if role == "assistant" else "System",
+                    user_name=self.config.bot.name if role == "assistant" else "System",
                     reply_to_id=internal_msg_id if i == 0 else None, # Only first intermediate replies to user
                     timestamp=datetime.now(),
                     tool_calls=msg_dict.get("tool_calls"),
@@ -402,8 +402,8 @@ class PepperBot:
         application = ApplicationBuilder().token(self.config.bot.token).post_shutdown(self.shutdown).post_init(self.post_init).connect_timeout(30.0).read_timeout(30.0).write_timeout(30.0).build()
         application.add_handler(CommandHandler("start", self.start))
         application.add_handler(CommandHandler("help", self.help_command))
-        # Handle /pepper command
-        application.add_handler(CommandHandler("pepper", self.handle_message))
+        # Handle custom command
+        application.add_handler(CommandHandler(self.config.bot.command, self.handle_message))
         # Handle replies (messages that don't start with /pepper but reply to bot are handled in handle_message logic)
         # We need a message handler that catches text messages AND photos. 
         # We allow commands here to ensure captioned images with /pepper (which might be skipped by CommandHandler) are caught.
