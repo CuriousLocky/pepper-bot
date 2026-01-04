@@ -78,6 +78,8 @@ class MemoryManager:
         self._save_short_term()
 
     def update_user_info(self, user_id: int, name: str, description: str):
+        # remove redundant newlines in description
+        description = re.sub(r'\n+', ' ', description).strip()
         self.user_info[user_id] = UserInfoEntry(user_id=user_id, name=name, description=description)
         self._save_user_info()
 
