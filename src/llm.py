@@ -193,7 +193,8 @@ class LLMClient:
                 tools=self.chat_tools,
                 tool_choice="auto",
                 temperature=self.config.model_params.temperature,
-                max_tokens=self.config.context.max_ai_response_token
+                max_tokens=self.config.context.max_ai_response_token,
+                reasoning_effort=self.config.model_params.reasoning_effort
             )
             
             response_message = response.choices[0].message
@@ -213,7 +214,8 @@ class LLMClient:
                     tools=self.chat_tools,
                     tool_choice="auto",
                     temperature=self.config.model_params.temperature,
-                    max_tokens=self.config.context.max_ai_response_token
+                    max_tokens=self.config.context.max_ai_response_token,
+                    reasoning_effort=self.config.model_params.reasoning_effort
                 )
                 response_message = response.choices[0].message
                 new_messages.append(response_message.model_dump())
@@ -256,6 +258,7 @@ Use the provided tools to take action.
                 tools=self.maintenance_tools,
                 tool_choice="auto",
                 temperature=0.3, # Lower temperature for maintenance tasks
+                reasoning_effort=self.config.model_params.reasoning_effort
             )
             
             response_message = response.choices[0].message
