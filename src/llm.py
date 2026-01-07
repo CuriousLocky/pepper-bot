@@ -16,9 +16,14 @@ class LLMClient:
             api_key=config.api.key,
             base_url=config.api.url
         )
-        self.maintenance_tools = self._define_tools()
-        # Chat tools exclude 'add_long_term_memory'
-        self.chat_tools = [t for t in self.maintenance_tools if t['function']['name'] != 'add_long_term_memory']
+        all_tools = self._define_all_tools()
+        
+        # Chat tools: everything except 'add_long_term_memory'
+        self.chat_tools = [t for t in all_tools if t['function']['name'] != 'add_long_term_memory']
+        
+        # Maintenance tools: specific memory management tools
+        maintenance_names = {'add_short_term_memory', 'add_long_term_memory', 'update_user_info'}
+        self.maintenance_tools = [t for t in all_tools if t['function']['name'] in maintenance_names]
 
     def _clean_response(self, text: str) -> str:
         if not text:
@@ -38,7 +43,7 @@ class LLMClient:
         
         return cleaned_text
 
-    def _define_tools(self) -> List[Dict[str, Any]]:
+    def _define_all_tools(self) -> List[Dict[str, Any]]:
         return [
             {
                 "type": "function",
