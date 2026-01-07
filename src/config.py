@@ -18,7 +18,7 @@ class ApiConfig(BaseModel):
 
 class ModelParams(BaseModel):
     temperature: float = 0.7
-    reasoning_effort: str = "medium"
+    reasoning_effort: Optional[str] = None
 
 class ContextConfig(BaseModel):
     max_context_window: int = 10000

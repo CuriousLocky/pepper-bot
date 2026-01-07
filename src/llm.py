@@ -249,15 +249,19 @@ class LLMClient:
         new_messages = []
 
         try:
-            response = await self.client.chat.completions.create(
-                model=self.config.api.model,
-                messages=full_messages,
-                tools=self.chat_tools,
-                tool_choice="auto",
-                temperature=self.config.model_params.temperature,
-                max_tokens=self.config.context.max_ai_response_token,
-                reasoning_effort=self.config.model_params.reasoning_effort
-            )
+            # Prepare common arguments
+            kwargs = {
+                "model": self.config.api.model,
+                "messages": full_messages,
+                "tools": self.chat_tools,
+                "tool_choice": "auto",
+                "temperature": self.config.model_params.temperature,
+                "max_tokens": self.config.context.max_ai_response_token,
+            }
+            if self.config.model_params.reasoning_effort:
+                kwargs["reasoning_effort"] = self.config.model_params.reasoning_effort
+
+            response = await self.client.chat.completions.create(**kwargs)
             
             response_message = response.choices[0].message
             new_messages.append(response_message.model_dump())
@@ -269,16 +273,11 @@ class LLMClient:
                 full_messages.extend(tool_results)
                 new_messages.extend(tool_results)
 
+                # Update messages for next call
+                kwargs["messages"] = full_messages
+                
                 # Get next response from AI
-                response = await self.client.chat.completions.create(
-                    model=self.config.api.model,
-                    messages=full_messages,
-                    tools=self.chat_tools,
-                    tool_choice="auto",
-                    temperature=self.config.model_params.temperature,
-                    max_tokens=self.config.context.max_ai_response_token,
-                    reasoning_effort=self.config.model_params.reasoning_effort
-                )
+                response = await self.client.chat.completions.create(**kwargs)
                 response_message = response.choices[0].message
                 new_messages.append(response_message.model_dump())
             
@@ -314,14 +313,17 @@ Use the provided tools to take action.
         ]
 
         try:
-            response = await self.client.chat.completions.create(
-                model=self.config.api.model,
-                messages=messages,
-                tools=self.maintenance_tools,
-                tool_choice="auto",
-                temperature=0.3, # Lower temperature for maintenance tasks
-                reasoning_effort=self.config.model_params.reasoning_effort
-            )
+            kwargs = {
+                "model": self.config.api.model,
+                "messages": messages,
+                "tools": self.maintenance_tools,
+                "tool_choice": "auto",
+                "temperature": 0.3,
+            }
+            if self.config.model_params.reasoning_effort:
+                kwargs["reasoning_effort"] = self.config.model_params.reasoning_effort
+
+            response = await self.client.chat.completions.create(**kwargs)
             
             response_message = response.choices[0].message
             if response_message.tool_calls:
