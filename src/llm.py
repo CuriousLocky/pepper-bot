@@ -181,13 +181,13 @@ class LLMClient:
             tool_output = ""
             try:
                 if function_name == "add_short_term_memory":
-                    self.memory_manager.add_short_term_event(function_args["content"])
+                    await self.memory_manager.add_short_term_event(function_args["content"])
                     tool_output = "Short-term memory added successfully."
                 elif function_name == "add_long_term_memory":
-                    self.memory_manager.append_long_term(function_args["content"])
+                    await self.memory_manager.append_long_term(function_args["content"])
                     tool_output = "Long-term memory added successfully."
                 elif function_name == "update_user_info":
-                    self.memory_manager.update_user_info(
+                    await self.memory_manager.update_user_info(
                         function_args["user_id"],
                         function_args["name"],
                         function_args["description"]

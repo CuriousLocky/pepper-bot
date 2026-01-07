@@ -1,6 +1,7 @@
 import json
 import re
 import yaml
+import asyncio
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Any
@@ -72,16 +73,16 @@ class MemoryManager:
         cleaned_content = re.sub(pattern, "", content).strip()
         return cleaned_content
 
-    def add_short_term_event(self, content: str):
+    async def add_short_term_event(self, content: str):
         content = self._clean_short_term_content(content)
         self.short_term_mem.append(MemoryEvent(content=content, timestamp=datetime.now()))
-        self._save_short_term()
+        await asyncio.to_thread(self._save_short_term)
 
-    def update_user_info(self, user_id: int, name: str, description: str):
+    async def update_user_info(self, user_id: int, name: str, description: str):
         # remove redundant newlines in description
         description = re.sub(r'\n+', ' ', description).strip()
         self.user_info[user_id] = UserInfoEntry(user_id=user_id, name=name, description=description)
-        self._save_user_info()
+        await asyncio.to_thread(self._save_user_info)
 
     def get_short_term_str(self) -> str:
         if not self.short_term_mem:
@@ -111,13 +112,13 @@ class MemoryManager:
         # For now, let's just return them.
         return expired_events
 
-    def remove_short_term_events(self, events: List[MemoryEvent]):
+    async def remove_short_term_events(self, events: List[MemoryEvent]):
         self.short_term_mem = [e for e in self.short_term_mem if e not in events]
-        self._save_short_term()
+        await asyncio.to_thread(self._save_short_term)
 
-    def append_long_term(self, content: str):
+    async def append_long_term(self, content: str):
         if self.long_term_mem:
             self.long_term_mem += "\n" + content
         else:
             self.long_term_mem = content
-        self._save_long_term()
+        await asyncio.to_thread(self._save_long_term)

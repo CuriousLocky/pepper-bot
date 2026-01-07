@@ -382,7 +382,7 @@ class PepperBot:
             logger.info(f"Consolidating {len(expired_events)} memory events...")
             await self.llm.consolidate_memory(expired_events, self.system_prompt_template)
             # Remove them after consolidation
-            self.memory.remove_short_term_events(expired_events)
+            await self.memory.remove_short_term_events(expired_events)
             logger.info("Memory consolidation complete.")
 
     async def shutdown(self, application: Application):
