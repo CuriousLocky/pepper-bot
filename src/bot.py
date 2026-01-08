@@ -98,7 +98,9 @@ class PepperBot:
         tool_context = {
             "schedule_func": lambda d, t, c: self.schedule_task(context, d, t, c, chat_id),
             "list_func": lambda: self.get_scheduled_tasks(context),
-            "chat_id": chat_id
+            "chat_id": chat_id,
+            "generated_images": [],
+            "history_images": {}
         }
 
         response_text, new_messages = await self.llm.get_response(
@@ -107,21 +109,65 @@ class PepperBot:
             tool_context=tool_context
         )
         
+        # Send generated images if any
+        if tool_context.get("generated_images"):
+            for img_data in tool_context["generated_images"]:
+                try:
+                    if isinstance(img_data, str) and img_data.startswith("data:image"):
+                        # Handle base64
+                        header, encoded = img_data.split(",", 1)
+                        binary_data = base64.b64decode(encoded)
+                        logger.info("Sending generated image (from base64)...")
+                        await context.bot.send_photo(chat_id=chat_id, photo=binary_data)
+                    else:
+                        # Handle file path
+                        logger.info(f"Sending generated image (from file): {img_data}")
+                        with open(img_data, 'rb') as f:
+                            await context.bot.send_photo(chat_id=chat_id, photo=f)
+                except Exception as e:
+                    logger.error(f"Error sending image: {e}")
+
         # Send response
         sent_msg = await context.bot.send_message(chat_id=chat_id, text=response_text)
         
         # Add Assistant response to history
-        assistant_internal_id = hist.get_next_message_id()
-        self.history.add_message(thread_id, Message(
-            role="assistant",
-            content=response_text,
-            message_id=assistant_internal_id,
-            telegram_id=sent_msg.message_id,
-            user_id=context.bot.id,
-            user_name=self.config.bot.name,
-            reply_to_id=internal_msg_id,
-            timestamp=datetime.now()
-        ))
+        for i, msg_dict in enumerate(new_messages):
+            is_last = (i == len(new_messages) - 1)
+            assistant_internal_id = hist.get_next_message_id()
+            role = msg_dict.get("role")
+            content = msg_dict.get("content")
+
+            if is_last and role == "assistant":
+                self.history.add_message(thread_id, Message(
+                    role="assistant",
+                    content=response_text,
+                    message_id=assistant_internal_id,
+                    telegram_id=sent_msg.message_id,
+                    user_id=context.bot.id,
+                    user_name=self.config.bot.name,
+                    reply_to_id=internal_msg_id,
+                    timestamp=datetime.now()
+                ))
+            else:
+                image_url_for_history = None
+                if role == "tool":
+                    tool_id = msg_dict.get("tool_call_id")
+                    if tool_id in tool_context.get("history_images", {}):
+                        image_url_for_history = tool_context["history_images"][tool_id]
+
+                self.history.add_message(thread_id, Message(
+                    role=role,
+                    content=content,
+                    message_id=assistant_internal_id,
+                    telegram_id=None,
+                    user_id=context.bot.id if role == "assistant" else None,
+                    user_name=self.config.bot.name if role == "assistant" else "System",
+                    reply_to_id=internal_msg_id if i == 0 else None,
+                    timestamp=datetime.now(),
+                    tool_calls=msg_dict.get("tool_calls"),
+                    tool_call_id=msg_dict.get("tool_call_id"),
+                    image_url=image_url_for_history
+                ))
         
         # Save history for the new thread (and any others)
         self.history.save()
@@ -315,7 +361,9 @@ class PepperBot:
         tool_context = {
             "schedule_func": lambda d, t, c: self.schedule_task(context, d, t, c, chat_id),
             "list_func": lambda: self.get_scheduled_tasks(context),
-            "chat_id": chat_id
+            "chat_id": chat_id,
+            "generated_images": [],
+            "history_images": {}
         }
 
         logger.info(f"Sending request to LLM (Payload messages: {len(messages_payload)})...")
@@ -325,6 +373,24 @@ class PepperBot:
             tool_context=tool_context
         )
         logger.info(f"Received response from LLM with {len(new_messages)} new messages.")
+
+        # Send generated images if any
+        if tool_context.get("generated_images"):
+            for img_data in tool_context["generated_images"]:
+                try:
+                    if isinstance(img_data, str) and img_data.startswith("data:image"):
+                        # Handle base64
+                        header, encoded = img_data.split(",", 1)
+                        binary_data = base64.b64decode(encoded)
+                        logger.info("Sending generated image (from base64)...")
+                        await context.bot.send_photo(chat_id=chat_id, photo=binary_data)
+                    else:
+                        # Handle file path
+                        logger.info(f"Sending generated image (from file): {img_data}")
+                        with open(img_data, 'rb') as f:
+                            await context.bot.send_photo(chat_id=chat_id, photo=f)
+                except Exception as e:
+                    logger.error(f"Error sending image: {e}")
 
         # Send response
         logger.info("Sending response to Telegram...")
@@ -359,6 +425,12 @@ class PepperBot:
                 ))
             else:
                 # Intermediate messages (tool calls or tool results)
+                image_url_for_history = None
+                if role == "tool":
+                    tool_id = msg_dict.get("tool_call_id")
+                    if tool_id in tool_context.get("history_images", {}):
+                        image_url_for_history = tool_context["history_images"][tool_id]
+
                 self.history.add_message(thread_id, Message(
                     role=role,
                     content=content,
@@ -369,7 +441,8 @@ class PepperBot:
                     reply_to_id=internal_msg_id if i == 0 else None, # Only first intermediate replies to user
                     timestamp=datetime.now(),
                     tool_calls=msg_dict.get("tool_calls"),
-                    tool_call_id=msg_dict.get("tool_call_id")
+                    tool_call_id=msg_dict.get("tool_call_id"),
+                    image_url=image_url_for_history
                 ))
 
     async def scheduled_maintenance(self, context: ContextTypes.DEFAULT_TYPE):

@@ -49,13 +49,25 @@ class ChatHistory(BaseModel):
         for msg in reversed(self.messages):
             # Special handling for tool and assistant messages with tool calls
             if msg.role == "tool":
-                msg_obj = {
-                    "role": "tool",
-                    "content": msg.content,
-                    "tool_call_id": msg.tool_call_id
-                }
+                if msg.image_url:
+                    msg_obj = {
+                        "role": "tool",
+                        "content": [
+                            {"type": "text", "text": msg.content or ""},
+                            {"type": "image_url", "image_url": {"url": msg.image_url}}
+                        ],
+                        "tool_call_id": msg.tool_call_id
+                    }
+                else:
+                    msg_obj = {
+                        "role": "tool",
+                        "content": msg.content,
+                        "tool_call_id": msg.tool_call_id
+                    }
                 # Approximate tokens for tool message
                 msg_tokens = 4 + len(encoding.encode(msg.content or "")) + len(encoding.encode(msg.tool_call_id or ""))
+                if msg.image_url:
+                    msg_tokens += 85
             elif msg.role == "assistant" and msg.tool_calls:
                 msg_obj = {
                     "role": "assistant",

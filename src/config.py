@@ -34,6 +34,13 @@ class SearchConfig(BaseModel):
     google_api_key: Optional[str] = None
     google_cse_id: Optional[str] = None
 
+class ImageGenerationConfig(BaseModel):
+    enabled: bool = False
+    api_url: Optional[str] = None
+    api_key: Optional[str] = None
+    model: str = "dall-e-3"
+    resolution_scale: float = 0.5
+
 class Config(BaseModel):
     bot: BotConfig
     api: ApiConfig
@@ -41,6 +48,7 @@ class Config(BaseModel):
     context: ContextConfig
     tools: ToolSettings
     search: SearchConfig = Field(default_factory=SearchConfig)
+    image_generation: ImageGenerationConfig = Field(default_factory=ImageGenerationConfig)
 
 def load_config(config_path: str = "config/config.yaml") -> Config:
     with open(config_path, "r", encoding="utf-8") as f:

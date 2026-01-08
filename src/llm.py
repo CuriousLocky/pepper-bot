@@ -7,6 +7,7 @@ from config import Config
 from memory import MemoryManager
 from websearch import web_search
 from get_url_content import get_url_content
+from image_gen import generate_image
 
 class LLMClient:
     def __init__(self, config: Config, memory_manager: MemoryManager):
@@ -45,6 +46,23 @@ class LLMClient:
 
     def _define_all_tools(self) -> List[Dict[str, Any]]:
         return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "generate_image",
+                    "description": "Generate an image based on a description.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "description": {
+                                "type": "string",
+                                "description": "The detailed description of the image to generate."
+                            }
+                        },
+                        "required": ["description"]
+                    }
+                }
+            },
             {
                 "type": "function",
                 "function": {
@@ -185,7 +203,27 @@ class LLMClient:
             
             tool_output = ""
             try:
-                if function_name == "add_short_term_memory":
+                if function_name == "generate_image":
+                    success, full_res_base64, resized_base64, text_content = await generate_image(function_args["description"], self.config)
+                    
+                    if success and full_res_base64:
+                        tool_output = "The image is successfully generated and will attach to the next message"
+                        if text_content:
+                            tool_output += f"\n\n{text_content}"
+                            
+                        if tool_context is not None:
+                            if "generated_images" not in tool_context:
+                                tool_context["generated_images"] = []
+                            # Store full resolution base64 for delivery to chat
+                            tool_context["generated_images"].append(full_res_base64)
+                            
+                            if "history_images" not in tool_context:
+                                tool_context["history_images"] = {}
+                            # Store resized base64 for history context
+                            tool_context["history_images"][tool_call.id] = resized_base64
+                    else:
+                        tool_output = f"Failed to generate image. Model output:\n{text_content}"
+                elif function_name == "add_short_term_memory":
                     await self.memory_manager.add_short_term_event(function_args["content"])
                     tool_output = "Short-term memory added successfully."
                 elif function_name == "add_long_term_memory":
