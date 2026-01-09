@@ -3,7 +3,7 @@ import re
 import yaml
 import asyncio
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional, Any
 from pydantic import BaseModel
 
@@ -30,18 +30,70 @@ class MemoryManager:
         self.user_info: Dict[int, UserInfoEntry] = self._load_user_info()
 
     def _load_short_term(self) -> List[MemoryEvent]:
-        if self.short_term_path.exists():
-            try:
-                data = json.loads(self.short_term_path.read_text(encoding="utf-8"))
-                return [MemoryEvent(content=e["content"], timestamp=datetime.fromisoformat(e["timestamp"])) for e in data]
-            except Exception:
-                return []
-        return []
+        if not self.short_term_path.exists():
+            return []
+            
+        try:
+            raw_data = json.loads(self.short_term_path.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+
+        events_data = []
+        version = 0
+        
+        if isinstance(raw_data, list):
+            # Old format: direct list of events
+            events_data = raw_data
+            version = 1
+        elif isinstance(raw_data, dict):
+            version = raw_data.get("version", 0)
+            events_data = raw_data.get("events", [])
+            
+        mem_events = []
+        needs_migration = False
+        
+        if version < 2:
+            needs_migration = True
+            for e in events_data:
+                try:
+                    ts_str = e["timestamp"]
+                    dt = datetime.fromisoformat(ts_str)
+                    # If naive, assume local and convert to UTC
+                    if dt.tzinfo is None:
+                        dt = dt.astimezone(timezone.utc)
+                    else:
+                        # Ensure it is UTC
+                        dt = dt.astimezone(timezone.utc)
+                    
+                    mem_events.append(MemoryEvent(content=e["content"], timestamp=dt))
+                except Exception:
+                    continue
+        else:
+            for e in events_data:
+                try:
+                    mem_events.append(MemoryEvent(content=e["content"], timestamp=datetime.fromisoformat(e["timestamp"])))
+                except Exception:
+                    continue
+        
+        # Sort by timestamp (oldest first)
+        mem_events.sort(key=lambda x: x.timestamp)
+
+        # Save immediately to ensure file is in new format and sorted
+        self._save_short_term_data(mem_events)
+            
+        return mem_events
+
+    def _save_short_term_data(self, events: List[MemoryEvent]):
+        """Helper to save events in the new format."""
+        self.short_term_path.parent.mkdir(parents=True, exist_ok=True)
+        data = {
+            "version": 2,
+            "events": [{"content": e.content, "timestamp": e.timestamp.isoformat()} for e in events]
+        }
+        self.short_term_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
     def _save_short_term(self):
-        self.short_term_path.parent.mkdir(parents=True, exist_ok=True)
-        data = [{"content": e.content, "timestamp": e.timestamp.isoformat()} for e in self.short_term_mem]
-        self.short_term_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        self._save_short_term_data(self.short_term_mem)
 
     def _load_long_term(self) -> str:
         if self.long_term_path.exists():
@@ -75,7 +127,7 @@ class MemoryManager:
 
     async def add_short_term_event(self, content: str):
         content = self._clean_short_term_content(content)
-        self.short_term_mem.append(MemoryEvent(content=content, timestamp=datetime.now()))
+        self.short_term_mem.append(MemoryEvent(content=content, timestamp=datetime.now(timezone.utc)))
         await asyncio.to_thread(self._save_short_term)
 
     async def update_user_info(self, user_id: int, name: str, description: str):
@@ -99,10 +151,15 @@ class MemoryManager:
         return "\n".join([f"- {info.name} ({info.user_id}): {info.description}" for info in self.user_info.values()])
 
     def check_expirations(self, expiration_days: int):
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         expired_indices = []
         for i, event in enumerate(self.short_term_mem):
-            if now - event.timestamp > timedelta(days=expiration_days):
+            # Ensure event timestamp is aware for comparison
+            event_ts = event.timestamp
+            if event_ts.tzinfo is None:
+                event_ts = event_ts.astimezone(timezone.utc)
+                
+            if now - event_ts > timedelta(days=expiration_days):
                 expired_indices.append(i)
         
         # Returns events that need consolidation
