@@ -10,7 +10,7 @@ from PIL import Image
 from openai import AsyncOpenAI
 from config import Config
 
-async def generate_image(prompt: str, config: Config) -> tuple[bool, str | None, str | None, str]:
+async def generate_image(prompt: str, config: Config, image_base64: str | None = None) -> tuple[bool, str | None, str | None, str]:
     """
     Generates an image using a chat completion model.
     Returns: (success, full_res_base64, resized_base64_data_url, text_content)
@@ -24,9 +24,27 @@ async def generate_image(prompt: str, config: Config) -> tuple[bool, str | None,
     client = AsyncOpenAI(api_key=api_key, base_url=base_url)
 
     try:
+        if image_base64:
+            messages = [
+                {
+                    "role": "user", 
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": image_base64
+                            }
+                        }
+                    ]
+                }
+            ]
+        else:
+            messages = [{"role": "user", "content": prompt}]
+
         response = await client.chat.completions.create(
             model=config.image_generation.model,
-            messages=[{"role": "user", "content": prompt}],
+            messages=messages,
             temperature=1.0 # Default for creativity
         )
         

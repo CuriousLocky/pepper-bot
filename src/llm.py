@@ -57,6 +57,10 @@ class LLMClient:
                             "description": {
                                 "type": "string",
                                 "description": "The detailed description of the image to generate."
+                            },
+                            "msg_id": {
+                                "type": "integer",
+                                "description": "Optional. The message ID of an image in chat history to use as input reference."
                             }
                         },
                         "required": ["description"]
@@ -204,7 +208,51 @@ class LLMClient:
             tool_output = ""
             try:
                 if function_name == "generate_image":
-                    success, full_res_base64, resized_base64, text_content = await generate_image(function_args["description"], self.config)
+                    msg_id = function_args.get("msg_id")
+                    image_input = None
+                    
+                    if msg_id is not None:
+                        if tool_context and "chat_history" in tool_context:
+                            hist = tool_context["chat_history"]
+                            # Find message by internal ID
+                            target_msg = next((m for m in hist.messages if m.message_id == msg_id), None)
+                            if target_msg:
+                                if target_msg.image_url:
+                                    image_input = target_msg.image_url
+                                else:
+                                    tool_output = f"Error: Message {msg_id} does not contain an image."
+                                    # Skip generation if validation fails
+                                    results.append({
+                                        "tool_call_id": tool_call.id,
+                                        "role": "tool",
+                                        "name": function_name,
+                                        "content": tool_output,
+                                    })
+                                    continue
+                            else:
+                                tool_output = f"Error: Message {msg_id} not found."
+                                results.append({
+                                    "tool_call_id": tool_call.id,
+                                    "role": "tool",
+                                    "name": function_name,
+                                    "content": tool_output,
+                                })
+                                continue
+                        else:
+                            tool_output = "Error: Chat history context not available."
+                            results.append({
+                                "tool_call_id": tool_call.id,
+                                "role": "tool",
+                                "name": function_name,
+                                "content": tool_output,
+                            })
+                            continue
+
+                    success, full_res_base64, resized_base64, text_content = await generate_image(
+                        function_args["description"], 
+                        self.config, 
+                        image_base64=image_input
+                    )
                     
                     if success and full_res_base64:
                         tool_output = "The image is successfully generated and will attach to the next message"

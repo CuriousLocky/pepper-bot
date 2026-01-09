@@ -95,12 +95,14 @@ class PepperBot:
         )
         
         # Define tool context for the task execution (it can schedule more tasks!)
+        # Define tool context for the task execution (it can schedule more tasks!)
         tool_context = {
             "schedule_func": lambda d, t, c: self.schedule_task(context, d, t, c, chat_id),
             "list_func": lambda: self.get_scheduled_tasks(context),
             "chat_id": chat_id,
             "generated_images": [],
-            "history_images": {}
+            "history_images": {},
+            "chat_history": hist
         }
 
         response_text, new_messages = await self.llm.get_response(
@@ -358,12 +360,14 @@ class PepperBot:
         )
 
         # Prepare Tool Context
+        # Define tool context for the task execution (it can schedule more tasks!)
         tool_context = {
             "schedule_func": lambda d, t, c: self.schedule_task(context, d, t, c, chat_id),
             "list_func": lambda: self.get_scheduled_tasks(context),
             "chat_id": chat_id,
             "generated_images": [],
-            "history_images": {}
+            "history_images": {},
+            "chat_history": hist
         }
 
         logger.info(f"Sending request to LLM (Payload messages: {len(messages_payload)})...")
