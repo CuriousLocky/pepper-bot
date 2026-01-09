@@ -1,3 +1,4 @@
+import requests
 import trafilatura
 from bs4 import BeautifulSoup
 from typing import Optional
@@ -5,13 +6,19 @@ from typing import Optional
 def get_url_content(url: str, max_length: int = 5000) -> str:
     """
     Fetch and extract the main text content from a URL.
-    Uses Trafilatura for intelligent extraction, falling back to BeautifulSoup
-    if Trafilatura fails to find the main content.
+    Uses Requests with a fake UA to fetch, then Trafilatura for intelligent extraction,
+    falling back to BeautifulSoup if Trafilatura fails to find the main content.
     """
     try:
-        downloaded = trafilatura.fetch_url(url)
-        if downloaded is None:
-            return f"Error: Failed to download content from {url}"
+        # Use requests with a browser-like User-Agent to avoid simple blocking
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        }
+        response = requests.get(url, headers=headers, timeout=15)
+        response.raise_for_status() # Raise error for 4xx/5xx status codes
+        response.encoding = response.apparent_encoding
+        
+        downloaded = response.text
         
         # 1. Try Trafilatura (Best for articles/blogs)
         content = trafilatura.extract(downloaded, include_comments=False, include_tables=True)
