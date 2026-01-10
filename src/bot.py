@@ -30,6 +30,7 @@ class PepperBot:
         )
         self.history = HistoryManager("data/chat-histories.json")
         self.llm = LLMClient(self.config, self.memory)
+        self.bot_username = None
 
     async def _get_image_base64(self, message, context: ContextTypes.DEFAULT_TYPE) -> str | None:
         """Helper to download image from message and convert to base64."""
@@ -240,9 +241,24 @@ class PepperBot:
         if update.message.reply_to_message and update.message.reply_to_message.from_user.id == context.bot.id:
             is_reply_to_bot = True
 
-        is_command = msg_text.startswith(f"/{self.config.bot.command}")
+        # Precise command detection
+        cmd_pattern = rf'^/{re.escape(self.config.bot.command)}(?:@(\w+))?(?:\s|$)'
+        cmd_match = re.search(cmd_pattern, msg_text)
+        is_command = False
+        if cmd_match:
+            target_bot = cmd_match.group(1)
+            if not target_bot or (self.bot_username and target_bot.lower() == self.bot_username.lower()):
+                is_command = True
+
+        # Rule: If it's any command (starts with /), ignore it if:
+        # 1. It's not our activation command.
+        # 2. OR it's a reply to us (per user instruction: any command in a reply is ignored).
+        if msg_text.startswith('/'):
+            if not is_command or is_reply_to_bot:
+                logger.info(f"Ignoring command message (is_command={is_command}, is_reply_to_bot={is_reply_to_bot})")
+                return
         
-        # Activation conditions: /command OR reply to bot
+        # Activation conditions: our /command (not in a reply to us) OR non-command reply to us
         if not (is_command or is_reply_to_bot):
             return
         
@@ -474,6 +490,7 @@ class PepperBot:
     async def post_init(self, application: Application):
         bot_info = await application.bot.get_me()
         logger.info(f"Post-init: Bot ID is {bot_info.id}, Username is {bot_info.username}")
+        self.bot_username = bot_info.username
 
     def run(self):
         application = ApplicationBuilder().token(self.config.bot.token).post_shutdown(self.shutdown).post_init(self.post_init).connect_timeout(30.0).read_timeout(30.0).write_timeout(30.0).build()
