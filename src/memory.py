@@ -64,6 +64,7 @@ class MemoryManager:
             api_url=api_url,
             model=config.memory.embedding_model
         )
+        self.async_client = AsyncOpenAI(api_key=api_key, base_url=api_url)
         
         # Collections
         self.short_collection = self.chroma_client.get_or_create_collection(
@@ -334,7 +335,21 @@ class MemoryManager:
         while len(lru_list) > max_size:
             lru_list.pop()
 
-    async def get_short_term_str(self, query: str) -> str:
+    async def get_embeddings(self, texts: List[str]) -> List[List[float]]:
+        """Fetch embeddings for a list of strings using the async client."""
+        if not texts:
+            return []
+        try:
+            response = await self.async_client.embeddings.create(
+                input=texts,
+                model=self.config.memory.embedding_model
+            )
+            return [data.embedding for data in response.data]
+        except Exception as e:
+            logger.error(f"Error fetching embeddings: {e}")
+            return []
+
+    async def get_short_term_str(self, query: str, query_embeddings: Optional[List[List[float]]] = None) -> str:
         if not self.short_term_mem:
             return "No short-term memories."
 
@@ -345,9 +360,10 @@ class MemoryManager:
 
         # 2. Search for relevant older events
         relevant_ids = []
-        if self.config.memory.short.selective and query:
+        if self.config.memory.short.selective and (query or query_embeddings):
             results = self.short_collection.query(
-                query_texts=[query],
+                query_texts=[query] if query_embeddings is None else None,
+                query_embeddings=query_embeddings,
                 n_results=self.config.memory.short.top_k
             )
             if results["ids"] and results["ids"][0]:
@@ -385,13 +401,14 @@ class MemoryManager:
             return "No relevant short-term memories."
         return "\n".join([f"- [{e.timestamp.strftime('%Y-%m-%d %H:%M')}] {e.content}" for e in to_prompt])
 
-    async def get_long_term_str(self, query: str) -> str:
+    async def get_long_term_str(self, query: str, query_embeddings: Optional[List[List[float]]] = None) -> str:
         if not self.long_term_mem:
             return "No long-term memories."
 
-        if self.config.memory.long.selective and query:
+        if self.config.memory.long.selective and (query or query_embeddings):
             results = self.long_collection.query(
-                query_texts=[query],
+                query_texts=[query] if query_embeddings is None else None,
+                query_embeddings=query_embeddings,
                 n_results=self.config.memory.long.top_k
             )
             if results["ids"] and results["ids"][0]:
@@ -420,7 +437,7 @@ class MemoryManager:
         sorted_mem = sorted(self.long_term_mem, key=lambda x: x.timestamp)
         return "\n".join([f"- {e.content}" for e in sorted_mem])
 
-    async def get_user_info_str(self, query: str, current_user_id: Optional[int] = None) -> str:
+    async def get_user_info_str(self, query: str, current_user_id: Optional[int] = None, query_embeddings: Optional[List[List[float]]] = None) -> str:
         if not self.user_info:
             return "No known user information."
 
@@ -429,9 +446,10 @@ class MemoryManager:
             self._update_lru(self.state.user_lru, current_user_id, self.config.memory.user.lru_size)
 
         relevant_from_search = []
-        if self.config.memory.user.selective and query:
+        if self.config.memory.user.selective and (query or query_embeddings):
             results = self.user_collection.query(
-                query_texts=[query],
+                query_texts=[query] if query_embeddings is None else None,
+                query_embeddings=query_embeddings,
                 n_results=self.config.memory.user.top_k
             )
             if results["ids"] and results["ids"][0]:

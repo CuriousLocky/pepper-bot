@@ -331,9 +331,14 @@ class LLMClient:
                 # Combine last two if possible for better context
                 query = user_messages[-2] + "\n" + user_messages[-1]
 
-        short_mem = await self.memory_manager.get_short_term_str(query)
-        long_mem = await self.memory_manager.get_long_term_str(query)
-        user_info = await self.memory_manager.get_user_info_str(query, current_user_id)
+        # Pre-generate query embedding to save API calls
+        query_embeddings = None
+        if query:
+            query_embeddings = await self.memory_manager.get_embeddings([query])
+
+        short_mem = await self.memory_manager.get_short_term_str(query, query_embeddings=query_embeddings)
+        long_mem = await self.memory_manager.get_long_term_str(query, query_embeddings=query_embeddings)
+        user_info = await self.memory_manager.get_user_info_str(query, current_user_id, query_embeddings=query_embeddings)
 
         system_prompt = system_prompt_template.replace(
             "{{date-time}}", datetime.now().strftime("%Y-%m-%d %H:%M")
