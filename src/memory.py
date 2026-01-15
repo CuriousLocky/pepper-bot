@@ -92,32 +92,48 @@ class MemoryManager:
         logger.info("Syncing memory to vector store...")
         
         # Sync Users
-        if self.user_info:
-            uids = [str(uid) for uid in self.user_info.keys()]
-            existing = self.user_collection.get(ids=uids)
-            existing_map = {id: doc for id, doc in zip(existing['ids'], existing['documents'])} if existing['ids'] else {}
+        # 1. Identify valid IDs from file
+        valid_uids = set(str(uid) for uid in self.user_info.keys())
+        
+        # 2. Get all IDs currently in DB
+        # Note: getting all IDs might be heavy if millions, but acceptable for this scale
+        all_db_data = self.user_collection.get() 
+        all_db_ids = set(all_db_data['ids']) if all_db_data['ids'] else set()
+        
+        # 3. Delete IDs in DB that are not in file
+        to_delete = list(all_db_ids - valid_uids)
+        if to_delete:
+            logger.info(f"Removing {len(to_delete)} stale user entries from Chroma...")
+            self.user_collection.delete(ids=to_delete)
+            # Also clean LRU
+            self.state.user_lru = [uid for uid in self.state.user_lru if str(uid) not in to_delete]
             
-            to_upsert_ids = []
-            to_upsert_docs = []
-            to_upsert_metas = []
+        # 4. Upsert missing or changed
+        # We can optimize by only fetching existing for valid_uids
+        existing = self.user_collection.get(ids=list(valid_uids))
+        existing_map = {id: doc for id, doc in zip(existing['ids'], existing['documents'])} if existing['ids'] else {}
+        
+        to_upsert_ids = []
+        to_upsert_docs = []
+        to_upsert_metas = []
 
-            for uid, info in self.user_info.items():
-                sid = str(uid)
-                doc_content = f"{info.name}: {info.description}"
-                
-                # Check if needs update (missing or content changed)
-                if sid not in existing_map or existing_map[sid] != doc_content:
-                    to_upsert_ids.append(sid)
-                    to_upsert_docs.append(doc_content)
-                    to_upsert_metas.append({"user_id": uid})
+        for uid, info in self.user_info.items():
+            sid = str(uid)
+            doc_content = f"{info.name}: {info.description}"
             
-            if to_upsert_ids:
-                logger.info(f"Syncing {len(to_upsert_ids)} user entries to Chroma...")
-                self.user_collection.upsert(
-                    ids=to_upsert_ids,
-                    documents=to_upsert_docs,
-                    metadatas=to_upsert_metas
-                )
+            # Check if needs update (missing or content changed)
+            if sid not in existing_map or existing_map[sid] != doc_content:
+                to_upsert_ids.append(sid)
+                to_upsert_docs.append(doc_content)
+                to_upsert_metas.append({"user_id": uid})
+        
+        if to_upsert_ids:
+            logger.info(f"Syncing {len(to_upsert_ids)} user entries to Chroma...")
+            self.user_collection.upsert(
+                ids=to_upsert_ids,
+                documents=to_upsert_docs,
+                metadatas=to_upsert_metas
+            )
 
         # Sync Short Term
         self._sync_collection(self.short_term_mem, self.short_collection, "short-term")
@@ -126,6 +142,24 @@ class MemoryManager:
         self._sync_collection(self.long_term_mem, self.long_collection, "long-term")
 
     def _sync_collection(self, memory_list: List[MemoryEvent], collection, name: str):
+        # 1. Identify valid IDs from file
+        valid_ids = set(e.id for e in memory_list)
+        
+        # 2. Get all IDs currently in DB
+        all_db_data = collection.get()
+        all_db_ids = set(all_db_data['ids']) if all_db_data['ids'] else set()
+        
+        # 3. Delete IDs in DB that are not in file
+        to_delete = list(all_db_ids - valid_ids)
+        if to_delete:
+            logger.info(f"Removing {len(to_delete)} stale {name} events from Chroma...")
+            collection.delete(ids=to_delete)
+            # Update LRU if needed
+            if name == "short-term":
+                 self.state.short_term_lru = [rid for rid in self.state.short_term_lru if rid not in to_delete]
+            elif name == "long-term":
+                 self.state.long_term_lru = [rid for rid in self.state.long_term_lru if rid not in to_delete]
+
         if not memory_list:
             return
 
