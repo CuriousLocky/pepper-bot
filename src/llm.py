@@ -23,7 +23,7 @@ class LLMClient:
         self.chat_tools = [t for t in all_tools if t['function']['name'] != 'add_long_term_memory']
         
         # Maintenance tools: specific memory management tools
-        maintenance_names = {'add_short_term_memory', 'add_long_term_memory', 'update_user_info'}
+        maintenance_names = {'add_long_term_memory', 'update_user_info'}
         self.maintenance_tools = [t for t in all_tools if t['function']['name'] in maintenance_names]
 
     def _clean_response(self, text: str) -> str:
@@ -397,15 +397,15 @@ The following short-term memories are expiring:
 {events_str}
 
 Review these events.
-- If an event contains important long-term information (e.g., user preferences, major life events), save it to long-term memory.
-- If it reveals new long-term information about a user, update the user info.
+- If an event contains important long-term information (e.g., user preferences, major life events, learned skills), save it to long-term memory.
+- If it reveals new long-term information about a user, update the user info. Be very careful to not overwrite existing info unless it's a clear update.
 - If it is trivial, do nothing (it will be forgotten).
 
 Use the provided tools to take action.
 """
         
         sys_prompt_base = "You are a memory manager for a chatbot. Your job is to consolidate short-term memories into long-term storage or discard them."
-        sys_prompt = sys_prompt_base + f"\nCurrent Long-term Memory:\n{self.memory_manager.get_long_term_str()}\n\nCurrent User Info:\n{self.memory_manager.get_user_info_str()}"
+        sys_prompt = sys_prompt_base + f"\nCurrent Long-term Memory:\n{self.memory_manager.get_all_long_term_str()}\n\nCurrent User Info:\n{self.memory_manager.get_all_user_info_str()}"
 
         messages = [
             {"role": "system", "content": sys_prompt},

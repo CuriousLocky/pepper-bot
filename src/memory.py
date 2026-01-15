@@ -412,6 +412,14 @@ class MemoryManager:
             return "No relevant long-term memories."
         return "\n".join([f"- {e.content}" for e in to_prompt])
 
+    def get_all_long_term_str(self) -> str:
+        """Returns string representation of ALL long-term memories."""
+        if not self.long_term_mem:
+            return "No long-term memories."
+        # No LRU updates here as this is for system maintenance
+        sorted_mem = sorted(self.long_term_mem, key=lambda x: x.timestamp)
+        return "\n".join([f"- {e.content}" for e in sorted_mem])
+
     async def get_user_info_str(self, query: str, current_user_id: Optional[int] = None) -> str:
         if not self.user_info:
             return "No known user information."
@@ -456,6 +464,12 @@ class MemoryManager:
         if not to_prompt:
             return "No relevant user information."
         return "\n".join(to_prompt)
+
+    def get_all_user_info_str(self) -> str:
+        """Returns string representation of ALL user info."""
+        if not self.user_info:
+            return "No known user information."
+        return "\n".join([f"- {info.name} ({info.user_id}): {info.description}" for info in self.user_info.values()])
 
     def check_expirations(self, expiration_days: int) -> List[MemoryEvent]:
         now = datetime.now(timezone.utc)
