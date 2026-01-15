@@ -2,12 +2,15 @@ import json
 import re
 import yaml
 import asyncio
+import logging
 import chromadb
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional, Any, Union
 from pydantic import BaseModel
 from openai import AsyncOpenAI, OpenAI
+
+logger = logging.getLogger(__name__)
 
 class MemoryEvent(BaseModel):
     content: str
@@ -39,7 +42,7 @@ class ChromaEmbeddingFunction(chromadb.EmbeddingFunction):
 class MemoryManager:
     def __init__(self, config: Any, 
                  short_term_path: str = "data/short-term.json", 
-                 long_term_path: str = "data/long-term.json", # Changed to .json
+                 long_term_path: str = "data/long-term.json",
                  user_info_path: str = "data/known-users.yaml",
                  state_path: str = "data/memory-state.json"):
         self.config = config
@@ -81,8 +84,74 @@ class MemoryManager:
         self.user_info: Dict[int, UserInfoEntry] = self._load_user_info()
         self.state: MemoryState = self._load_state()
 
-        # Migrate if necessary
-        self._initial_sync_to_chroma()
+        # Sync memory to ensure vector store matches files (handling offline edits)
+        self._sync_memory()
+
+    def _sync_memory(self):
+        """Syncs file-based memory with ChromaDB, verifying IDs and updating embeddings if content changed."""
+        logger.info("Syncing memory to vector store...")
+        
+        # Sync Users
+        if self.user_info:
+            uids = [str(uid) for uid in self.user_info.keys()]
+            existing = self.user_collection.get(ids=uids)
+            existing_map = {id: doc for id, doc in zip(existing['ids'], existing['documents'])} if existing['ids'] else {}
+            
+            to_upsert_ids = []
+            to_upsert_docs = []
+            to_upsert_metas = []
+
+            for uid, info in self.user_info.items():
+                sid = str(uid)
+                doc_content = f"{info.name}: {info.description}"
+                
+                # Check if needs update (missing or content changed)
+                if sid not in existing_map or existing_map[sid] != doc_content:
+                    to_upsert_ids.append(sid)
+                    to_upsert_docs.append(doc_content)
+                    to_upsert_metas.append({"user_id": uid})
+            
+            if to_upsert_ids:
+                logger.info(f"Syncing {len(to_upsert_ids)} user entries to Chroma...")
+                self.user_collection.upsert(
+                    ids=to_upsert_ids,
+                    documents=to_upsert_docs,
+                    metadatas=to_upsert_metas
+                )
+
+        # Sync Short Term
+        self._sync_collection(self.short_term_mem, self.short_collection, "short-term")
+        
+        # Sync Long Term
+        self._sync_collection(self.long_term_mem, self.long_collection, "long-term")
+
+    def _sync_collection(self, memory_list: List[MemoryEvent], collection, name: str):
+        if not memory_list:
+            return
+
+        ids = [e.id for e in memory_list]
+        existing = collection.get(ids=ids)
+        existing_map = {id: doc for id, doc in zip(existing['ids'], existing['documents'])} if existing['ids'] else {}
+        
+        to_upsert_ids = []
+        to_upsert_docs = []
+        to_upsert_metas = []
+
+        for event in memory_list:
+            # Check if needs update (missing in DB or content mismatch)
+            # This handles cases where ID exists but content was manually edited in the JSON file
+            if event.id not in existing_map or existing_map[event.id] != event.content:
+                to_upsert_ids.append(event.id)
+                to_upsert_docs.append(event.content)
+                to_upsert_metas.append({"timestamp": event.timestamp.isoformat()})
+        
+        if to_upsert_ids:
+            logger.info(f"Syncing {len(to_upsert_ids)} {name} events to Chroma...")
+            collection.upsert(
+                ids=to_upsert_ids,
+                documents=to_upsert_docs,
+                metadatas=to_upsert_metas
+            )
 
     def _load_short_term(self) -> List[MemoryEvent]:
         if not self.short_term_path.exists():
@@ -123,7 +192,7 @@ class MemoryManager:
                 mem_events.append(MemoryEvent(
                     content=line, 
                     timestamp=ts,
-                    id=f"lt_{{int(ts.timestamp())}}_{i}"
+                    id=f"lt_{int(ts.timestamp())}_{i}"
                 ))
             # Save the new json
             self.long_term_mem = mem_events
@@ -176,33 +245,6 @@ class MemoryManager:
     def _save_state(self):
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
         self.state_path.write_text(self.state.model_dump_json(indent=2), encoding="utf-8")
-
-    def _initial_sync_to_chroma(self):
-        """Syncs existing JSON/YAML data to Chroma if Chroma is empty."""
-        # Short-term
-        if self.short_collection.count() == 0 and self.short_term_mem:
-            self.short_collection.add(
-                ids=[e.id for e in self.short_term_mem],
-                documents=[e.content for e in self.short_term_mem],
-                metadatas=[{"timestamp": e.timestamp.isoformat()} for e in self.short_term_mem]
-            )
-        
-        # Long-term
-        if self.long_collection.count() == 0 and self.long_term_mem:
-            self.long_collection.add(
-                ids=[e.id for e in self.long_term_mem],
-                documents=[e.content for e in self.long_term_mem],
-                metadatas=[{"timestamp": e.timestamp.isoformat()} for e in self.long_term_mem]
-            )
-            
-        # Users
-        if self.user_collection.count() == 0 and self.user_info:
-            uids = list(self.user_info.keys())
-            self.user_collection.add(
-                ids=[str(uid) for uid in uids],
-                documents=[f"{self.user_info[uid].name}: {self.user_info[uid].description}" for uid in uids],
-                metadatas=[{"user_id": uid} for uid in uids]
-            )
 
     async def add_short_term_event(self, content: str):
         event_id = f"st_{int(datetime.now(timezone.utc).timestamp())}_{hash(content) % 10000}"
