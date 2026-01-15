@@ -24,8 +24,9 @@ class PepperBot:
         self.config = load_config()
         self.system_prompt_template = load_system_prompt()
         self.memory = MemoryManager(
+            config=self.config,
             short_term_path="data/short-term.json",
-            long_term_path="data/long-term.txt",
+            long_term_path="data/long-term.json",
             user_info_path="data/known-users.yaml"
         )
         self.history = HistoryManager("data/chat-histories.json")
@@ -390,7 +391,8 @@ class PepperBot:
         response_text, new_messages = await self.llm.get_response(
             messages_payload, 
             self.system_prompt_template,
-            tool_context=tool_context
+            tool_context=tool_context,
+            current_user_id=user.id
         )
         logger.info(f"Received response from LLM with {len(new_messages)} new messages.")
 

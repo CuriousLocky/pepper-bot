@@ -319,16 +319,30 @@ class LLMClient:
     async def get_response(self, 
                            messages: List[Dict[str, Any]], 
                            system_prompt_template: str,
-                           tool_context: Dict[str, Any] = None) -> Tuple[str, List[Dict[str, Any]]]:
+                           tool_context: Dict[str, Any] = None,
+                           current_user_id: Optional[int] = None) -> Tuple[str, List[Dict[str, Any]]]:
         
+        # Determine query for memory retrieval from the last few messages
+        query = ""
+        user_messages = [m["content"] for m in messages if m["role"] == "user"]
+        if user_messages:
+            query = user_messages[-1]
+            if len(user_messages) > 1:
+                # Combine last two if possible for better context
+                query = user_messages[-2] + "\n" + user_messages[-1]
+
+        short_mem = await self.memory_manager.get_short_term_str(query)
+        long_mem = await self.memory_manager.get_long_term_str(query)
+        user_info = await self.memory_manager.get_user_info_str(query, current_user_id)
+
         system_prompt = system_prompt_template.replace(
             "{{date-time}}", datetime.now().strftime("%Y-%m-%d %H:%M")
         ).replace(
-            "{{short-mem}}", self.memory_manager.get_short_term_str()
+            "{{short-mem}}", short_mem
         ).replace(
-            "{{long-mem}}", self.memory_manager.get_long_term_str()
+            "{{long-mem}}", long_mem
         ).replace(
-            "{{user-info}}", self.memory_manager.get_user_info_str()
+            "{{user-info}}", user_info
         )
 
         full_messages = [{"role": "system", "content": system_prompt}] + messages
