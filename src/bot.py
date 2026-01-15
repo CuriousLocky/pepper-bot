@@ -487,6 +487,7 @@ class PepperBot:
         self.memory._save_short_term()
         self.memory._save_long_term()
         self.memory._save_user_info()
+        self.memory._save_state()
         logger.info("Shutdown complete.")
 
     async def post_init(self, application: Application):
