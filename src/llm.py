@@ -323,22 +323,47 @@ class LLMClient:
                            current_user_id: Optional[int] = None) -> Tuple[str, List[Dict[str, Any]]]:
         
         # Determine query for memory retrieval from the last few messages
-        query = ""
+        query_text = ""
+        query_input = ""
         user_messages = [m["content"] for m in messages if m["role"] == "user"]
+        
         if user_messages:
-            query = user_messages[-1]
+            last_content = user_messages[-1]
+            
+            # Helper to get text from content
+            def get_text(c):
+                if isinstance(c, str): return c
+                if isinstance(c, list): return " ".join([p.get("text", "") for p in c if p.get("type") == "text"])
+                return ""
+            
+            last_text = get_text(last_content)
+            
             if len(user_messages) > 1:
-                # Combine last two if possible for better context
-                query = user_messages[-2] + "\n" + user_messages[-1]
+                second_last_content = user_messages[-2]
+                prev_text = get_text(second_last_content)
+                
+                query_text = prev_text + "\n" + last_text
+                
+                # Construct query_input for embedding
+                if isinstance(last_content, list):
+                    # Multimodal
+                    query_input = [item.copy() for item in last_content]
+                    if prev_text:
+                         query_input.insert(0, {"type": "text", "text": prev_text + "\n"})
+                elif isinstance(last_content, str):
+                    query_input = prev_text + "\n" + last_content
+            else:
+                query_text = last_text
+                query_input = last_content
 
         # Pre-generate query embedding to save API calls
         query_embeddings = None
-        if query:
-            query_embeddings = await self.memory_manager.get_embeddings([query])
+        if query_input:
+            query_embeddings = await self.memory_manager.get_embeddings([query_input])
 
-        short_mem = await self.memory_manager.get_short_term_str(query, query_embeddings=query_embeddings)
-        long_mem = await self.memory_manager.get_long_term_str(query, query_embeddings=query_embeddings)
-        user_info = await self.memory_manager.get_user_info_str(query, current_user_id, query_embeddings=query_embeddings)
+        short_mem = await self.memory_manager.get_short_term_str(query_text, query_embeddings=query_embeddings)
+        long_mem = await self.memory_manager.get_long_term_str(query_text, query_embeddings=query_embeddings)
+        user_info = await self.memory_manager.get_user_info_str(query_text, current_user_id, query_embeddings=query_embeddings)
 
         system_prompt = system_prompt_template.replace(
             "{{date-time}}", datetime.now().strftime("%Y-%m-%d %H:%M")

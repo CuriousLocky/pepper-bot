@@ -16,6 +16,7 @@ class MemoryEvent(BaseModel):
     content: str
     timestamp: datetime
     id: Optional[str] = None
+    image: Optional[str] = None # Base64 data URI
 
 class UserInfoEntry(BaseModel):
     user_id: int
@@ -33,11 +34,16 @@ class ChromaEmbeddingFunction(chromadb.EmbeddingFunction):
         self.model = model
 
     def __call__(self, input: chromadb.Documents) -> chromadb.Embeddings:
-        response = self.client.embeddings.create(
-            input=input,
-            model=self.model
-        )
-        return [data.embedding for data in response.data]
+        results = []
+        for item in input:
+            response = self.client.embeddings.create(
+                input=[],
+                model=self.model,
+                extra_body={"messages": [{"role": "user", "content": [{"type": "text", "text": item}]}]}
+            )
+            results.append(response.data[0].embedding)
+        return results
+        
 
 class MemoryManager:
     def __init__(self, config: Any, 
@@ -335,14 +341,61 @@ class MemoryManager:
         while len(lru_list) > max_size:
             lru_list.pop()
 
-    async def get_embeddings(self, texts: List[str]) -> List[List[float]]:
-        """Fetch embeddings for a list of strings using the async client."""
+    async def get_embeddings(self, texts: List[Union[str, List[Dict]]]) -> List[List[float]]:
+        """Fetch embeddings for a list of strings or multimodal inputs using the async client."""
         if not texts:
             return []
+        
+        processed_inputs = []
+        for item in texts:
+            if isinstance(item, list):
+                text_part = ""
+                image_part = ""
+                for part in item:
+                    if part.get("type") == "text":
+                        text_part += part.get("text", "")
+                    elif part.get("type") == "image_url":
+                        image_part = part.get("image_url", {})
+                
+                if image_part:
+                    logger.info("image part length: {}".format(len(image_part.get("url", ""))))
+                    processed_inputs.append(
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "image_url", "image_url": image_part},
+                                {"type": "text", "text": text_part}
+                            ]
+                        }
+                    )
+                    # processed_inputs.append([image_part.get("url")])
+                else:
+                    # Fallback if no image found in list (shouldn't happen for multimodal intent)
+                    processed_inputs.append(
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": text_part}
+                            ]
+                        }
+                    )
+            else:
+                # String input
+                processed_inputs.append(
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": item}
+                        ]
+                    }
+                )
+
         try:
+            # logger.info(f"extra_body being sent for embeddings: {"messages": processed_inputs}")
             response = await self.async_client.embeddings.create(
-                input=texts,
-                model=self.config.memory.embedding_model
+                input=[],
+                model=self.config.memory.embedding_model,
+                extra_body={"messages": processed_inputs}
             )
             return [data.embedding for data in response.data]
         except Exception as e:
@@ -442,9 +495,6 @@ class MemoryManager:
             return "No known user information."
 
         # 1. Update LRU with current sender
-        if current_user_id:
-            self._update_lru(self.state.user_lru, current_user_id, self.config.memory.user.lru_size)
-
         relevant_from_search = []
         if self.config.memory.user.selective and (query or query_embeddings):
             results = self.user_collection.query(
@@ -454,9 +504,14 @@ class MemoryManager:
             )
             if results["ids"] and results["ids"][0]:
                 search_ids = [int(sid) for sid in results["ids"][0]]
-                # Most relevant to cache top
-                self._update_lru(self.state.user_lru, search_ids[0], self.config.memory.user.lru_size)
+                # Most relevant 2 to cache top
+                end = 2 if len(search_ids) >=2 else len(search_ids)
+                for sid in reversed(search_ids[:end]):
+                    self._update_lru(self.state.user_lru, search_ids[0], self.config.memory.user.lru_size)
                 relevant_from_search = search_ids
+                
+        if current_user_id:
+            self._update_lru(self.state.user_lru, current_user_id, self.config.memory.user.lru_size)          
 
         # Build final list
         # "The prompt of this round should include information of: [A, B, C, D, E] + [F]"
