@@ -41,12 +41,39 @@ class ImageGenerationConfig(BaseModel):
     model: str = "dall-e-3"
     resolution_scale: float = 0.5
 
+class MemoryShortConfig(BaseModel):
+    selective: bool = True
+    top_k: int = 20
+    always_include_hours: int = 24
+    relevant_size: int = 40
+
+class MemoryLongConfig(BaseModel):
+    selective: bool = True
+    top_k: int = 30
+    relevant_size: int = 50
+
+class MemoryUserConfig(BaseModel):
+    selective: bool = True
+    top_k: int = 5
+    lru_size: int = 8
+    relevant_include: int = 5
+
+class MemoryConfig(BaseModel):
+    api_url: str = ""
+    api_key: str = ""
+    embedding_model: str = "text-embedding-3-small"
+    db_path: str = "data/chroma_db"
+    short: MemoryShortConfig = Field(default_factory=MemoryShortConfig)
+    long: MemoryLongConfig = Field(default_factory=MemoryLongConfig)
+    user: MemoryUserConfig = Field(default_factory=MemoryUserConfig)
+
 class Config(BaseModel):
     bot: BotConfig
     api: ApiConfig
     model_params: ModelParams
     context: ContextConfig
     tools: ToolSettings
+    memory: MemoryConfig = Field(default_factory=MemoryConfig)
     search: SearchConfig = Field(default_factory=SearchConfig)
     image_generation: ImageGenerationConfig = Field(default_factory=ImageGenerationConfig)
 

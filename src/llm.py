@@ -23,7 +23,7 @@ class LLMClient:
         self.chat_tools = [t for t in all_tools if t['function']['name'] != 'add_long_term_memory']
         
         # Maintenance tools: specific memory management tools
-        maintenance_names = {'add_short_term_memory', 'add_long_term_memory', 'update_user_info'}
+        maintenance_names = {'add_long_term_memory', 'update_user_info'}
         self.maintenance_tools = [t for t in all_tools if t['function']['name'] in maintenance_names]
 
     def _clean_response(self, text: str) -> str:
@@ -319,16 +319,60 @@ class LLMClient:
     async def get_response(self, 
                            messages: List[Dict[str, Any]], 
                            system_prompt_template: str,
-                           tool_context: Dict[str, Any] = None) -> Tuple[str, List[Dict[str, Any]]]:
+                           tool_context: Dict[str, Any] = None,
+                           current_user_id: Optional[int] = None) -> Tuple[str, List[Dict[str, Any]]]:
         
+        # Determine query for memory retrieval from the last few messages
+        query_text = ""
+        query_input = ""
+        user_messages = [m["content"] for m in messages if m["role"] == "user"]
+        
+        if user_messages:
+            last_content = user_messages[-1]
+            
+            # Helper to get text from content
+            def get_text(c):
+                if isinstance(c, str): return c
+                if isinstance(c, list): return " ".join([p.get("text", "") for p in c if p.get("type") == "text"])
+                return ""
+            
+            last_text = get_text(last_content)
+            
+            if len(user_messages) > 1:
+                second_last_content = user_messages[-2]
+                prev_text = get_text(second_last_content)
+                
+                query_text = prev_text + "\n" + last_text
+                
+                # Construct query_input for embedding
+                if isinstance(last_content, list):
+                    # Multimodal
+                    query_input = [item.copy() for item in last_content]
+                    if prev_text:
+                         query_input.insert(0, {"type": "text", "text": prev_text + "\n"})
+                elif isinstance(last_content, str):
+                    query_input = prev_text + "\n" + last_content
+            else:
+                query_text = last_text
+                query_input = last_content
+
+        # Pre-generate query embedding to save API calls
+        query_embeddings = None
+        if query_input:
+            query_embeddings = await self.memory_manager.get_embeddings([query_input])
+
+        short_mem = await self.memory_manager.get_short_term_str(query_text, query_embeddings=query_embeddings)
+        long_mem = await self.memory_manager.get_long_term_str(query_text, query_embeddings=query_embeddings)
+        user_info = await self.memory_manager.get_user_info_str(query_text, current_user_id, query_embeddings=query_embeddings)
+
         system_prompt = system_prompt_template.replace(
             "{{date-time}}", datetime.now().strftime("%Y-%m-%d %H:%M")
         ).replace(
-            "{{short-mem}}", self.memory_manager.get_short_term_str()
+            "{{short-mem}}", short_mem
         ).replace(
-            "{{long-mem}}", self.memory_manager.get_long_term_str()
+            "{{long-mem}}", long_mem
         ).replace(
-            "{{user-info}}", self.memory_manager.get_user_info_str()
+            "{{user-info}}", user_info
         )
 
         full_messages = [{"role": "system", "content": system_prompt}] + messages
@@ -383,15 +427,15 @@ The following short-term memories are expiring:
 {events_str}
 
 Review these events.
-- If an event contains important long-term information (e.g., user preferences, major life events), save it to long-term memory.
-- If it reveals new long-term information about a user, update the user info.
+- If an event contains important long-term information (e.g., user preferences, major life events, learned skills), save it to long-term memory.
+- If it reveals new long-term information about a user, update the user info. Be very careful to not overwrite existing info unless it's a clear update.
 - If it is trivial, do nothing (it will be forgotten).
 
 Use the provided tools to take action.
 """
         
         sys_prompt_base = "You are a memory manager for a chatbot. Your job is to consolidate short-term memories into long-term storage or discard them."
-        sys_prompt = sys_prompt_base + f"\nCurrent Long-term Memory:\n{self.memory_manager.get_long_term_str()}\n\nCurrent User Info:\n{self.memory_manager.get_user_info_str()}"
+        sys_prompt = sys_prompt_base + f"\nCurrent Long-term Memory:\n{self.memory_manager.get_all_long_term_str()}\n\nCurrent User Info:\n{self.memory_manager.get_all_user_info_str()}"
 
         messages = [
             {"role": "system", "content": sys_prompt},

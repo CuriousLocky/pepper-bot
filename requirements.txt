@@ -9,5 +9,6 @@ duckduckgo_search
 trafilatura
 requests
 beautifulsoup4
+chromadb
 python-telegram-bot[job-queue]
 Pillow
