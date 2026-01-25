@@ -8,6 +8,8 @@ from memory import MemoryManager
 from websearch import web_search
 from get_url_content import get_url_content
 from image_gen import generate_image
+from random import randint
+import os
 
 class LLMClient:
     def __init__(self, config: Config, memory_manager: MemoryManager):
@@ -77,7 +79,7 @@ class LLMClient:
                         "properties": {
                             "content": {
                                 "type": "string",
-                                "description": "The content of the memory to save."
+                                "description": "The content of the memory to save (timestamp automatically added)."
                             }
                         },
                         "required": ["content"]
@@ -196,6 +198,27 @@ class LLMClient:
                         "required": []
                     }
                 }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "randint",
+                    "description": "Return random integer in range [a, b], including both end points.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "a": {
+                                "type": "integer",
+                                "description": "Beginning of the range (inclusive)."
+                            },
+                            "b": {
+                                "type": "integer",
+                                "description": "End of the range (inclusive)."
+                            }
+                        },
+                        "required": ["a", "b"]
+                    }
+                }
             }
         ]
         if self.config.black_list.enable:
@@ -221,6 +244,26 @@ class LLMClient:
                     }
                 }
             })
+        if self.config.skills.enabled:
+            tool_list.extend([
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "fetch_skill",
+                        "description": "Fetch and load a skill by name.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "skill_name": {
+                                    "type": "string",
+                                    "description": "The name of the skill"
+                                }
+                            },
+                            "required": ["skill_name"]
+                        }
+                    }
+                }
+            ])
         return tool_list
 
     async def _execute_tools(self, tool_calls: List[Any], tool_context: Dict[str, Any] = None) -> List[Dict[str, Any]]:
@@ -335,8 +378,18 @@ class LLMClient:
                         )
                     else:
                         tool_output = "Error: Blacklist context not available."
+                elif function_name == "randint":
+                    a = function_args["a"]
+                    b = function_args["b"]
+                    rand_value = randint(a, b)
+                    tool_output = str(rand_value)
+                elif function_name == "list_skills":
+                    tool_output = await tool_context["list_skills_func"]()
+                elif function_name == "fetch_skill":
+                    skill_name = function_args["skill_name"]
+                    tool_output = await tool_context["fetch_skill_func"](skill_name)
                 else:
-                    tool_output = f"Unknown tool: {function_name}"                        
+                    tool_output = f"Unknown tool: {function_name}"
             except Exception as e:
                 tool_output = f"Error executing tool {function_name}: {str(e)}"
             
@@ -396,6 +449,7 @@ class LLMClient:
         short_mem = await self.memory_manager.get_short_term_str(query_text, query_embeddings=query_embeddings)
         long_mem = await self.memory_manager.get_long_term_str(query_text, query_embeddings=query_embeddings)
         user_info = await self.memory_manager.get_user_info_str(query_text, current_user_id, query_embeddings=query_embeddings)
+        skill_list = self.list_skills()
 
         system_prompt = system_prompt_template.replace(
             "{{date-time}}", datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -405,6 +459,8 @@ class LLMClient:
             "{{long-mem}}", long_mem
         ).replace(
             "{{user-info}}", user_info
+        ).replace(
+            "{{skill-list}}", skill_list
         )
 
         full_messages = [{"role": "system", "content": system_prompt}] + messages
@@ -493,3 +549,23 @@ Use the provided tools to take action.
                 
         except Exception as e:
             print(f"Error consolidating memory: {e}")
+            
+    def list_skills(self) -> str:
+        if not self.config.skills.enabled:
+            return "Available Skills:\n" + "Skills feature is disabled."
+        
+        skills_root = self.config.skills.root_path
+        
+        # create skills root if not exists
+        if not os.path.isdir(skills_root):
+            os.makedirs(skills_root)
+            return "Available Skills:\n" + "No skills available."
+        
+        try:
+            skill_files = [f for f in os.listdir(skills_root) if f.endswith('.md')]
+            if not skill_files:
+                return "Available Skills:\n" + "No skills available."
+            skill_names = [os.path.splitext(f)[0] for f in skill_files]
+            return "Available Skills:\n" + "\n".join(f"- {name}" for name in skill_names)
+        except Exception as e:
+            return f"Error listing skills"

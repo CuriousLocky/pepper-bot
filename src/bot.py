@@ -8,6 +8,7 @@ from typing import Set
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters, Application
 from random import randint
+import os
 
 from config import load_config, load_system_prompt
 from memory import MemoryManager
@@ -393,6 +394,7 @@ class PepperBot:
             "schedule_func": lambda d, t, c: self.schedule_task(context, d, t, c, chat_id),
             "list_func": lambda: self.get_scheduled_tasks(context),
             "block_user_func": lambda uid, dur: self.add_blacklist(uid, dur),
+            "fetch_skill_func": lambda name: self.fetch_skill(name),
             "chat_id": chat_id,
             "generated_images": [],
             "history_images": {},
@@ -503,6 +505,23 @@ class PepperBot:
         if user_id in self.blacklist:
             self.blacklist.remove(user_id)
             logger.info(f"User {user_id} removed from blacklist.")
+
+    async def fetch_skill(self, skill_name: str) -> str:
+        if not self.config.skills.enabled:
+            return "Skills feature is disabled."
+        
+        skills_root = self.config.skills.root_path
+        skill_path = os.path.join(skills_root, f"{skill_name}.md")
+        if not os.path.isfile(skill_path):
+            return f"Skill '{skill_name}' not found."
+        
+        try:
+            with open(skill_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            return content
+        except Exception as e:
+            logger.error(f"Error reading skill '{skill_name}': {e}")
+            return f"Error reading skill '{skill_name}': {e}"
 
     async def scheduled_maintenance(self, context: ContextTypes.DEFAULT_TYPE):
         # 1. Clean expired chat histories

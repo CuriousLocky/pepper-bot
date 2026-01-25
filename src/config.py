@@ -66,11 +66,16 @@ class MemoryConfig(BaseModel):
     short: MemoryShortConfig = Field(default_factory=MemoryShortConfig)
     long: MemoryLongConfig = Field(default_factory=MemoryLongConfig)
     user: MemoryUserConfig = Field(default_factory=MemoryUserConfig)
+
 class BlackListConfig(BaseModel):
     enable: bool = False
     admin: List[int] = []
     max_minute: int = 30
     blocked_messages: List[str] = ["You are blocked by this bot."]
+    
+class SkillsConfig(BaseModel):
+    enabled: bool = True
+    root_path: str = "skills"
 
 class Config(BaseModel):
     bot: BotConfig
@@ -82,6 +87,7 @@ class Config(BaseModel):
     search: SearchConfig = Field(default_factory=SearchConfig)
     image_generation: ImageGenerationConfig = Field(default_factory=ImageGenerationConfig)
     black_list: BlackListConfig = Field(default_factory=BlackListConfig)
+    skills: SkillsConfig = Field(default_factory=SkillsConfig)
 
 def load_config(config_path: str = "config/config.yaml") -> Config:
     with open(config_path, "r", encoding="utf-8") as f:
