@@ -4,8 +4,10 @@ import base64
 import io
 import re
 from datetime import datetime
+from typing import Set
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters, Application
+from random import randint
 
 from config import load_config, load_system_prompt
 from memory import MemoryManager
@@ -32,6 +34,8 @@ class PepperBot:
         self.history = HistoryManager("data/chat-histories.json")
         self.llm = LLMClient(self.config, self.memory)
         self.bot_username = None
+        # Blacklist set is not persisted across restarts
+        self.blacklist:Set[int] = set()
 
     async def _get_image_base64(self, message, context: ContextTypes.DEFAULT_TYPE) -> str | None:
         """Helper to download image from message and convert to base64."""
@@ -96,7 +100,6 @@ class PepperBot:
             model=self.config.api.model
         )
         
-        # Define tool context for the task execution (it can schedule more tasks!)
         # Define tool context for the task execution (it can schedule more tasks!)
         tool_context = {
             "schedule_func": lambda d, t, c: self.schedule_task(context, d, t, c, chat_id),
@@ -289,6 +292,14 @@ class PepperBot:
             # New command activation -> New thread
             hist = self.history.create_thread(chat_id)
             thread_id = hist.id
+            
+                
+        if user.id in self.blacklist:
+            logger.info(f"User {user.id} is blacklisted. Sending blocked response.")
+            # send a random blocked message
+            blocked_msg = self.config.black_list.blocked_messages[randint(0, len(self.config.black_list.blocked_messages)-1)]
+            await update.message.reply_text(blocked_msg)
+            return
 
         # Prepare message content (strip command if present)
         text = msg_text
@@ -381,6 +392,7 @@ class PepperBot:
         tool_context = {
             "schedule_func": lambda d, t, c: self.schedule_task(context, d, t, c, chat_id),
             "list_func": lambda: self.get_scheduled_tasks(context),
+            "block_user_func": lambda uid, dur: self.add_blacklist(uid, dur),
             "chat_id": chat_id,
             "generated_images": [],
             "history_images": {},
@@ -466,6 +478,31 @@ class PepperBot:
                     tool_call_id=msg_dict.get("tool_call_id"),
                     image_url=image_url_for_history
                 ))
+    
+    async def add_blacklist(self, user_id: int, duration_minutes: int) -> str:
+        # guard on feature enabled
+        if not self.config.black_list.enable:
+            return "Blacklist feature is disabled."
+        # validate duration
+        if duration_minutes > self.config.black_list.max_minute:
+            return f"Error: Maximum block duration is {self.config.black_list.max_minute} minutes."
+        if duration_minutes <= 0:
+            return "Error: Duration must be a positive integer."
+        if user_id in self.config.black_list.admin:
+            return "Error: Cannot block an admin user."
+        if user_id in self.blacklist:
+            return "User is already blacklisted."
+        
+        self.blacklist.add(user_id)
+        logger.info(f"User {user_id} added to blacklist for {duration_minutes} minutes.")
+        # Schedule removal
+        asyncio.get_event_loop().call_later(duration_minutes * 60, self.remove_blacklist, user_id)
+        return f"[{datetime.now().strftime('%Y-%m-%d %H:%M')}] User {user_id} has been blacklisted for {duration_minutes} minutes."
+        
+    def remove_blacklist(self, user_id: int):
+        if user_id in self.blacklist:
+            self.blacklist.remove(user_id)
+            logger.info(f"User {user_id} removed from blacklist.")
 
     async def scheduled_maintenance(self, context: ContextTypes.DEFAULT_TYPE):
         # 1. Clean expired chat histories

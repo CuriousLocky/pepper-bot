@@ -45,7 +45,7 @@ class LLMClient:
         return cleaned_text
 
     def _define_all_tools(self) -> List[Dict[str, Any]]:
-        return [
+        tool_list = [
             {
                 "type": "function",
                 "function": {
@@ -198,6 +198,30 @@ class LLMClient:
                 }
             }
         ]
+        if self.config.black_list.enable:
+            # If blacklist feature is enabled, add a tool for it
+            tool_list.append({
+                "type": "function",
+                "function": {
+                    "name": "block_user",
+                    "description": "Block a user from interacting.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "user_id": {
+                                    "type": "integer",
+                                    "description": "The Telegram User ID."
+                                },
+                            "duration_minutes": {
+                                    "type": "integer",
+                                    "description": f"Duration in minutes of blocking (max: {self.config.black_list.max_minute})."
+                                },                            
+                        },
+                        "required": ["user_id", "duration_minutes"]
+                    }
+                }
+            })
+        return tool_list
 
     async def _execute_tools(self, tool_calls: List[Any], tool_context: Dict[str, Any] = None) -> List[Dict[str, Any]]:
         results = []
@@ -303,8 +327,16 @@ class LLMClient:
                         tool_output = await tool_context["list_func"]()
                     else:
                         tool_output = "Error: Scheduling context not available."
+                elif function_name == "block_user":
+                    if tool_context and "block_user_func" in tool_context:
+                        tool_output = await tool_context["block_user_func"](
+                            function_args["user_id"],
+                            function_args["duration_minutes"]
+                        )
+                    else:
+                        tool_output = "Error: Blacklist context not available."
                 else:
-                    tool_output = f"Unknown tool: {function_name}"
+                    tool_output = f"Unknown tool: {function_name}"                        
             except Exception as e:
                 tool_output = f"Error executing tool {function_name}: {str(e)}"
             
