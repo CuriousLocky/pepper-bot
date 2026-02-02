@@ -19,6 +19,15 @@ class LLMClient:
             api_key=config.api.key,
             base_url=config.api.url
         )
+        
+        # Tool model client for memory consolidation
+        tool_api_key = config.tool_model.api_key or config.api.key
+        tool_api_url = config.tool_model.api_url or config.api.url
+        self.tool_client = AsyncOpenAI(
+            api_key=tool_api_key,
+            base_url=tool_api_url
+        )
+        
         all_tools = self._define_all_tools()
         
         # Chat tools: everything except 'add_long_term_memory'
@@ -532,16 +541,14 @@ Use the provided tools to take action.
 
         try:
             kwargs = {
-                "model": self.config.api.model,
+                "model": self.config.tool_model.model,
                 "messages": messages,
                 "tools": self.maintenance_tools,
                 "tool_choice": "auto",
                 "temperature": 0.3,
             }
-            if self.config.model_params.reasoning_effort:
-                kwargs["reasoning_effort"] = self.config.model_params.reasoning_effort
 
-            response = await self.client.chat.completions.create(**kwargs)
+            response = await self.tool_client.chat.completions.create(**kwargs)
             
             response_message = response.choices[0].message
             if response_message.tool_calls:

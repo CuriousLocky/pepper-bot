@@ -41,6 +41,11 @@ class ImageGenerationConfig(BaseModel):
     model: str = "dall-e-3"
     resolution_scale: float = 0.5
 
+class ToolModelConfig(BaseModel):
+    api_url: str = ""
+    api_key: str = ""
+    model: str = "gpt-4o-mini"
+
 class MemoryShortConfig(BaseModel):
     selective: bool = True
     top_k: int = 20
@@ -86,6 +91,7 @@ class Config(BaseModel):
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     search: SearchConfig = Field(default_factory=SearchConfig)
     image_generation: ImageGenerationConfig = Field(default_factory=ImageGenerationConfig)
+    tool_model: ToolModelConfig = Field(default_factory=ToolModelConfig)
     black_list: BlackListConfig = Field(default_factory=BlackListConfig)
     skills: SkillsConfig = Field(default_factory=SkillsConfig)
 
