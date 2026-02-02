@@ -30,11 +30,12 @@ class LLMClient:
         
         all_tools = self._define_all_tools()
         
-        # Chat tools: everything except 'add_long_term_memory'
-        self.chat_tools = [t for t in all_tools if t['function']['name'] != 'add_long_term_memory']
+        # Chat tools: everything except memory management tools
+        excluded_names = {'add_long_term_memory', 'add_knowledge', 'update_user_info'}
+        self.chat_tools = [t for t in all_tools if t['function']['name'] not in excluded_names]
         
         # Maintenance tools: specific memory management tools
-        maintenance_names = {'add_long_term_memory', 'update_user_info'}
+        maintenance_names = {'add_long_term_memory', 'add_knowledge', 'update_user_info'}
         self.maintenance_tools = [t for t in all_tools if t['function']['name'] in maintenance_names]
 
     def _clean_response(self, text: str) -> str:
@@ -99,13 +100,30 @@ class LLMClient:
                 "type": "function",
                 "function": {
                     "name": "add_long_term_memory",
-                    "description": "Add a permanent fact or summarized event to long-term memory.",
+                    "description": "Add a permanent event or fact to long-term memory. Use this for specific occurrences, events, or time-dependent information about what happened.",
                     "parameters": {
                         "type": "object",
                         "properties": {
                             "content": {
                                 "type": "string",
                                 "description": "The content to save permanently."
+                            }
+                        },
+                        "required": ["content"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "add_knowledge",
+                    "description": "Add a permanent knowledge to the knowledge store. Use this for plain facts about the bot itself, rules the bot should follow, methodologies, or procedures that define how the bot operates.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "content": {
+                                "type": "string",
+                                "description": "The knowledge to save permanently."
                             }
                         },
                         "required": ["content"]
@@ -353,6 +371,9 @@ class LLMClient:
                 elif function_name == "add_long_term_memory":
                     await self.memory_manager.append_long_term(function_args["content"])
                     tool_output = "Long-term memory added successfully."
+                elif function_name == "add_knowledge":
+                    await self.memory_manager.append_knowledge(function_args["content"])
+                    tool_output = "Knowledge added successfully."
                 elif function_name == "update_user_info":
                     await self.memory_manager.update_user_info(
                         function_args["user_id"],
@@ -458,6 +479,7 @@ class LLMClient:
         short_mem = await self.memory_manager.get_short_term_str(query_text, query_embeddings=query_embeddings)
         long_mem = await self.memory_manager.get_long_term_str(query_text, query_embeddings=query_embeddings)
         user_info = await self.memory_manager.get_user_info_str(query_text, current_user_id, query_embeddings=query_embeddings)
+        knowledges = self.memory_manager.get_all_knowledges_str()
         skill_list = self.list_skills()
 
         system_prompt = system_prompt_template.replace(
@@ -468,6 +490,8 @@ class LLMClient:
             "{{long-mem}}", long_mem
         ).replace(
             "{{user-info}}", user_info
+        ).replace(
+            "{{knowledges}}", knowledges
         ).replace(
             "{{skill-list}}", skill_list
         )
@@ -524,15 +548,16 @@ The following short-term memories are expiring:
 {events_str}
 
 Review these events.
-- If an event contains important long-term information (e.g., user preferences, major life events, learned skills), save it to long-term memory.
+- If it is a plain fact about the bot itself, a rule the bot should follow, a methodology, or a procedure, save it to knowledge.
+- If it is an event (something special happened on a particular day, personal interactions), save it to long-term memory.
 - If it reveals new long-term information about a user, update the user info. Be very careful to not overwrite existing info unless it's a clear update.
 - If it is trivial, do nothing (it will be forgotten).
 
 Use the provided tools to take action.
 """
         
-        sys_prompt_base = "You are a memory manager for a chatbot. Your job is to consolidate short-term memories into long-term storage or discard them."
-        sys_prompt = sys_prompt_base + f"\nCurrent Long-term Memory:\n{self.memory_manager.get_all_long_term_str()}\n\nCurrent User Info:\n{self.memory_manager.get_all_user_info_str()}"
+        sys_prompt_base = "You are a memory manager for a chatbot. Your job is to consolidate short-term memories into knowledge (facts, rules, methodologies) or long-term events."
+        sys_prompt = sys_prompt_base + f"\nCurrent Knowledge:\n{self.memory_manager.get_all_knowledges_str()}\n\nCurrent Long-term Memory:\n{self.memory_manager.get_all_long_term_str()}\n\nCurrent User Info:\n{self.memory_manager.get_all_user_info_str()}"
 
         messages = [
             {"role": "system", "content": sys_prompt},

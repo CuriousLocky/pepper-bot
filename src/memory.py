@@ -6,7 +6,7 @@ import logging
 import chromadb
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
-from typing import List, Dict, Optional, Any, Union
+from typing import List, Dict, Optional, Any, Union, Tuple
 from pydantic import BaseModel
 from openai import AsyncOpenAI, OpenAI
 
@@ -49,11 +49,13 @@ class MemoryManager:
     def __init__(self, config: Any, 
                  short_term_path: str = "data/short-term.json", 
                  long_term_path: str = "data/long-term.json",
+                 knowledges_path: str = "data/knowledges.json",
                  user_info_path: str = "data/known-users.yaml",
                  state_path: str = "data/memory-state.json"):
         self.config = config
         self.short_term_path = Path(short_term_path)
         self.long_term_path = Path(long_term_path)
+        self.knowledges_path = Path(knowledges_path)
         self.user_info_path = Path(user_info_path)
         self.state_path = Path(state_path)
         
@@ -72,6 +74,11 @@ class MemoryManager:
         )
         self.async_client = AsyncOpenAI(api_key=api_key, base_url=api_url)
         
+        # Setup Tool Model Client for migration and classification
+        tool_api_key = config.tool_model.api_key or config.api.key
+        tool_api_url = config.tool_model.api_url or config.api.url
+        self.tool_client = AsyncOpenAI(api_key=tool_api_key, base_url=tool_api_url)
+        
         # Collections
         self.short_collection = self.chroma_client.get_or_create_collection(
             name="short_term", 
@@ -88,11 +95,15 @@ class MemoryManager:
         
         self.short_term_mem: List[MemoryEvent] = self._load_short_term()
         self.long_term_mem: List[MemoryEvent] = self._load_long_term()
+        self.knowledges_mem: List[MemoryEvent] = self._load_knowledges()
         self.user_info: Dict[int, UserInfoEntry] = self._load_user_info()
         self.state: MemoryState = self._load_state()
 
         # Sync memory to ensure vector store matches files (handling offline edits)
         self._sync_memory()
+
+        # Check and perform version migration if needed
+        self._check_and_migrate_sync()
 
     def _sync_memory(self):
         """Syncs file-based memory with ChromaDB, verifying IDs and updating embeddings if content changed."""
@@ -214,7 +225,7 @@ class MemoryManager:
     def _save_short_term(self):
         self.short_term_path.parent.mkdir(parents=True, exist_ok=True)
         data = {
-            "version": 2,
+            "version": 3,
             "events": [{"content": e.content, "timestamp": e.timestamp.isoformat(), "id": e.id} for e in self.short_term_mem]
         }
         self.short_term_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -256,7 +267,7 @@ class MemoryManager:
     def _save_long_term(self):
         self.long_term_path.parent.mkdir(parents=True, exist_ok=True)
         data = {
-            "version": 2,
+            "version": 3,
             "events": [{"content": e.content, "timestamp": e.timestamp.isoformat(), "id": e.id} for e in self.long_term_mem]
         }
         self.long_term_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -287,6 +298,286 @@ class MemoryManager:
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
         self.state_path.write_text(self.state.model_dump_json(indent=2), encoding="utf-8")
 
+    def _load_knowledges(self) -> List[MemoryEvent]:
+        if not self.knowledges_path.exists():
+            return []
+        try:
+            data = json.loads(self.knowledges_path.read_text(encoding="utf-8"))
+            events = data.get("events", [])
+            return [MemoryEvent(
+                content=e["content"],
+                timestamp=datetime.fromisoformat(e["timestamp"]),
+                id=e.get("id")
+            ) for e in events]
+        except Exception:
+            return []
+
+    def _save_knowledges(self):
+        self.knowledges_path.parent.mkdir(parents=True, exist_ok=True)
+        data = {
+            "version": 3,
+            "events": [{"content": e.content, "timestamp": e.timestamp.isoformat(), "id": e.id} for e in self.knowledges_mem]
+        }
+        self.knowledges_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    def _get_file_version(self, file_path: Path) -> int:
+        """Get version from a JSON file."""
+        if not file_path.exists():
+            return 0
+        try:
+            data = json.loads(file_path.read_text(encoding="utf-8"))
+            return data.get("version", 0)
+        except:
+            return 0
+
+    def _check_and_migrate_sync(self):
+        """Check and perform version migrations if needed (synchronous wrapper)."""
+        long_term_version = self._get_file_version(self.long_term_path)
+        
+        if long_term_version == 2:
+            asyncio.run(self._migrate_to_v3())
+
+    async def _check_and_migrate(self):
+        """Check and perform version migrations if needed."""
+        long_term_version = self._get_file_version(self.long_term_path)
+        
+        if long_term_version == 2:
+            await self._migrate_to_v3()
+
+    async def _migrate_to_v3(self):
+        """Migrate from version 2 to 3: Separate knowledges from events."""
+        logger.info("Starting migration to version 3: Separating knowledges from events...")
+        
+        if not self.long_term_mem:
+            logger.info("No long-term memories to migrate.")
+            return
+        
+        total = len(self.long_term_mem)
+        batch_size = 10
+        parallel_batches = 5
+        
+        # Create all batches with their original indices
+        batches = []
+        for i in range(0, total, batch_size):
+            batch = self.long_term_mem[i:i + batch_size]
+            batches.append((i, batch))  # (original_start_index, batch)
+        
+        logger.info(f"Created {len(batches)} batches to process in parallel groups of {parallel_batches}")
+        
+        # Process batches in parallel groups
+        all_results = []
+        for i in range(0, len(batches), parallel_batches):
+            batch_group = batches[i:i + parallel_batches]
+            
+            # Process each batch in the group in parallel (5 requests at a time)
+            tasks = [self._process_batch_with_index(start_idx, batch) for start_idx, batch in batch_group]
+            group_results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Collect results (handle exceptions)
+            for result in group_results:
+                if isinstance(result, Exception):
+                    logger.error(f"Batch processing failed with exception: {result}")
+                    all_results.append(None)
+                else:
+                    all_results.append(result)
+        
+        # Sort results by original batch index to maintain order
+        # This ensures that even though batches are processed in parallel,
+        # the final list maintains the original document order
+        all_results.sort(key=lambda x: x[0] if x else 0)
+        
+        # Combine results in order
+        knowledge_entries = []
+        event_entries = []
+        total_knowledges = 0
+        total_events = 0
+        
+        for result in all_results:
+            if result is None:
+                continue
+            
+            start_idx, knowl_indices, evt_indices, batch_knowledges, batch_events = result
+            batch_num = (start_idx // batch_size) + 1
+            
+            knowledge_entries.extend(batch_knowledges)
+            event_entries.extend(batch_events)
+            total_knowledges += len(batch_knowledges)
+            total_events += len(batch_events)
+            
+            logger.info(f"Batch {batch_num} processed: {len(batch_knowledges)} knowledges, {len(batch_events)} events")
+        
+        logger.info(f"Migration complete: {total_knowledges} knowledges, {total_events} events")
+        
+        # Update memory lists
+        self.knowledges_mem = knowledge_entries
+        self.long_term_mem = event_entries
+        
+        # Save all files with version 3
+        await asyncio.to_thread(self._save_long_term)
+        await asyncio.to_thread(self._save_short_term)
+        await asyncio.to_thread(self._save_knowledges)
+        
+        logger.info("Migration to version 3 complete.")
+
+    async def _process_batch_with_index(self, start_idx: int, batch: List[MemoryEvent]) -> Tuple[int, List[int], List[int], List[MemoryEvent], List[MemoryEvent]]:
+        """Process a single batch and return results with its original index."""
+        batch_indices = list(range(len(batch)))
+        batch_num = (start_idx // 10) + 1
+        
+        try:
+            knowledge_indices, event_indices = await self._classify_batch(batch)
+            
+            # Validate that all indices are covered exactly once
+            all_indices = set(knowledge_indices) | set(event_indices)
+            expected_indices = set(batch_indices)
+            
+            if all_indices != expected_indices:
+                logger.warning(f"Batch {batch_num}: Index mismatch. Expected {expected_indices}, got {all_indices}. Attempting to fill gaps...")
+                
+                # Fill missing indices as events
+                missing_indices = expected_indices - all_indices
+                event_indices.extend(missing_indices)
+                
+            # Check for duplicates
+            knowledge_set = set(knowledge_indices)
+            event_set = set(event_indices)
+            duplicates = (knowledge_set & event_set)
+            
+            if duplicates:
+                logger.warning(f"Batch {batch_num}: Duplicate indices {duplicates}. Moving duplicates to events.")
+                knowledge_indices = [idx for idx in knowledge_indices if idx not in duplicates]
+                event_indices.extend(list(duplicates))
+            
+            # Sort indices to maintain order
+            knowledge_indices.sort()
+            event_indices.sort()
+            
+            # Assign entries based on classification
+            batch_knowledges = []
+            batch_events = []
+            
+            for idx in knowledge_indices:
+                if 0 <= idx < len(batch):
+                    batch_knowledges.append(batch[idx])
+            
+            for idx in event_indices:
+                if 0 <= idx < len(batch):
+                    batch_events.append(batch[idx])
+            
+            return (start_idx, knowledge_indices, event_indices, batch_knowledges, batch_events)
+            
+        except Exception as e:
+            logger.error(f"Error processing batch {batch_num}: {e}, defaulting all to events")
+            # Default all entries in batch to events
+            return (start_idx, [], list(range(len(batch))), [], batch.copy())
+
+    async def _classify_batch(self, batch: List[MemoryEvent]) -> Tuple[List[int], List[int]]:
+        """Classify a batch of entries using tool calling."""
+        from openai.types.chat import ChatCompletionMessageParam
+        
+        entries_text = ""
+        for idx, event in enumerate(batch):
+            entries_text += f"\n[{idx}] {event.content}"
+        
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "classify_knowledge",
+                    "description": "Classify entries as knowledge. Provide a list of indices that should be classified as knowledge.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "indices": {
+                                "type": "array",
+                                "items": {"type": "integer"},
+                                "description": "List of indices (0-9) corresponding to knowledge entries"
+                            }
+                        },
+                        "required": ["indices"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "classify_event",
+                    "description": "Classify entries as events. Provide a list of indices that should be classified as events.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "indices": {
+                                "type": "array",
+                                "items": {"type": "integer"},
+                                "description": "List of indices (0-9) corresponding to event entries"
+                            }
+                        },
+                        "required": ["indices"]
+                    }
+                }
+            }
+        ]
+        
+        prompt = f"""Classify the following memory entries:
+{entries_text}
+
+Classification criteria:
+- KNOWLEDGE: Plain facts about the bot itself, rules the bot should follow, methodologies, procedures, or persistent information that defines how the bot operates. These are general truths or instructions regardless of time. They should not be related to a specific action a user took.
+- EVENT: Specific occurrences describing what someone did, personal interactions, temporary situations, or time-dependent information.
+
+Use the provided tools to classify each entry. Each entry should be classified exactly once as either knowledge or event."""
+        
+        knowledge_indices: List[int] = []
+        event_indices: List[int] = []
+        
+        max_retries = 3
+        retry_delay = 5
+        
+        for attempt in range(max_retries):
+            try:
+                messages: List[ChatCompletionMessageParam] = [
+                    {"role": "user", "content": prompt}
+                ]
+                
+                response = await self.tool_client.chat.completions.create(
+                    model=self.config.tool_model.model,
+                    messages=messages,
+                    tools=tools,
+                    tool_choice="auto",
+                    temperature=0.1
+                )
+                
+                response_message = response.choices[0].message
+                
+                if response_message.tool_calls:
+                    for tool_call in response_message.tool_calls:
+                        function_name = tool_call.function.name
+                        import json
+                        function_args = json.loads(tool_call.function.arguments)
+                        
+                        if function_name == "classify_knowledge":
+                            indices = function_args.get("indices", [])
+                            knowledge_indices.extend(indices)
+                        elif function_name == "classify_event":
+                            indices = function_args.get("indices", [])
+                            event_indices.extend(indices)
+                else:
+                    logger.warning("No tool calls in response, defaulting all to events")
+                    event_indices = list(range(len(batch)))
+                
+                break
+                
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    logger.warning(f"Attempt {attempt + 1}/{max_retries} failed: {e}, retrying in {retry_delay} seconds...")
+                    await asyncio.sleep(retry_delay)
+                else:
+                    logger.error(f"All {max_retries} attempts failed: {e}, defaulting all to events")
+                    event_indices = list(range(len(batch)))
+                    break
+        
+        return knowledge_indices, event_indices
+
     async def add_short_term_event(self, content: str):
         event_id = f"st_{int(datetime.now(timezone.utc).timestamp())}_{hash(content) % 10000}"
         event = MemoryEvent(content=content, timestamp=datetime.now(timezone.utc), id=event_id)
@@ -314,6 +605,14 @@ class MemoryManager:
         )
         
         await asyncio.to_thread(self._save_long_term)
+
+    async def append_knowledge(self, content: str):
+        """Append a knowledge to the knowledges store."""
+        event_id = f"kn_{int(datetime.now(timezone.utc).timestamp())}_{hash(content) % 10000}"
+        event = MemoryEvent(content=content, timestamp=datetime.now(timezone.utc), id=event_id)
+        self.knowledges_mem.append(event)
+        
+        await asyncio.to_thread(self._save_knowledges)
 
     async def update_user_info(self, user_id: int, name: str, description: str):
         description = re.sub(r'\n+', ' ', description).strip()
@@ -564,3 +863,10 @@ class MemoryManager:
         
         await asyncio.to_thread(self._save_short_term)
         await asyncio.to_thread(self._save_state)
+
+    def get_all_knowledges_str(self) -> str:
+        """Returns string representation of ALL knowledges."""
+        if not self.knowledges_mem:
+            return "No knowledge stored."
+        sorted_mem = sorted(self.knowledges_mem, key=lambda x: x.timestamp)
+        return "\n".join([f"- {e.content}" for e in sorted_mem])

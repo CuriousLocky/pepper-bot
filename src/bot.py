@@ -30,6 +30,7 @@ class PepperBot:
             config=self.config,
             short_term_path="data/short-term.json",
             long_term_path="data/long-term.json",
+            knowledges_path="data/knowledges.json",
             user_info_path="data/known-users.yaml"
         )
         self.history = HistoryManager("data/chat-histories.json")
