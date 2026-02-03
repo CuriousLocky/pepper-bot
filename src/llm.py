@@ -518,8 +518,16 @@ class LLMClient:
             new_messages.append(response_message.model_dump())
             response_message_content = self._clean_response(response_message.content or "")
 
+            empty_response_counter = 0
             while response_message.tool_calls or response_message_content == "":
                 full_messages.append(response_message.model_dump())
+                
+                if response_message_content == "" and not response_message.tool_calls:
+                    empty_response_counter += 1
+                    if empty_response_counter >=3:
+                        # Prevent infinite loop
+                        response_message_content = "Error communicating with AI: Empty response from AI."
+                        break
                 
                 tool_results = await self._execute_tools(response_message.tool_calls, tool_context)
                 full_messages.extend(tool_results)
