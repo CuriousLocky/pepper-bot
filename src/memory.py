@@ -99,6 +99,9 @@ class MemoryManager:
         self.user_info: Dict[int, UserInfoEntry] = self._load_user_info()
         self.state: MemoryState = self._load_state()
 
+        # Validate LRU cache entries after all data is loaded
+        self._validate_lru_caches()
+
         # Sync memory to ensure vector store matches files (handling offline edits)
         self._sync_memory()
 
@@ -293,6 +296,44 @@ class MemoryManager:
             except Exception:
                 return MemoryState()
         return MemoryState()
+
+    def _validate_lru_caches(self):
+        """Validate LRU cache entries and remove invalid IDs."""
+        logger.info("Validating LRU caches...")
+        
+        # Validate short_term_lru
+        short_term_ids = set(e.id for e in self.short_term_mem)
+        valid_short_lru = [lid for lid in self.state.short_term_lru if lid in short_term_ids]
+        removed_short = len(self.state.short_term_lru) - len(valid_short_lru)
+        if removed_short > 0:
+            logger.warning(f"Removed {removed_short} invalid IDs from short_term_lru cache")
+        self.state.short_term_lru = valid_short_lru
+        
+        # Validate long_term_lru
+        # IDs should exist in long_term_mem and NOT in knowledges_mem
+        long_term_ids = set(e.id for e in self.long_term_mem)
+        knowledge_ids = set(e.id for e in self.knowledges_mem)
+        
+        valid_long_lru = []
+        for lid in self.state.long_term_lru:
+            if lid in long_term_ids:
+                valid_long_lru.append(lid)
+            elif lid in knowledge_ids:
+                logger.warning(f"Removed long_term_lru ID '{lid}' because it's now a knowledge entry (was migrated)")
+        
+        removed_long = len(self.state.long_term_lru) - len(valid_long_lru)
+        if removed_long > 0:
+            logger.warning(f"Removed {removed_long} invalid/migrated IDs from long_term_lru cache")
+        self.state.long_term_lru = valid_long_lru
+        
+        # Validate user_lru
+        valid_user_lru = [uid for uid in self.state.user_lru if uid in self.user_info]
+        removed_user = len(self.state.user_lru) - len(valid_user_lru)
+        if removed_user > 0:
+            logger.warning(f"Removed {removed_user} invalid user IDs from user_lru cache")
+        self.state.user_lru = valid_user_lru
+        
+        logger.info(f"LRU cache validation complete: short_term={len(self.state.short_term_lru)}, long_term={len(self.state.long_term_lru)}, user={len(self.state.user_lru)}")
 
     def _save_state(self):
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
