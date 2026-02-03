@@ -516,8 +516,9 @@ class LLMClient:
             
             response_message = response.choices[0].message
             new_messages.append(response_message.model_dump())
+            response_message_content = self._clean_response(response_message.content or "")
 
-            while response_message.tool_calls:
+            while response_message.tool_calls or response_message_content == "":
                 full_messages.append(response_message.model_dump())
                 
                 tool_results = await self._execute_tools(response_message.tool_calls, tool_context)
@@ -531,8 +532,12 @@ class LLMClient:
                 response = await self.client.chat.completions.create(**kwargs)
                 response_message = response.choices[0].message
                 new_messages.append(response_message.model_dump())
+                if response_message_content == "":
+                    response_message_content = self._clean_response(response_message.content or "")
+                else:
+                    response_message_content += "\n" + self._clean_response(response_message.content or "")
             
-            return self._clean_response(response_message.content or ""), new_messages
+            return response_message_content, new_messages
 
         except Exception as e:
             return f"Error communicating with AI: {str(e)}", []
