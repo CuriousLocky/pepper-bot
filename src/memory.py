@@ -844,23 +844,8 @@ Use the provided tools to classify each entry. Each entry should be classified e
     async def get_user_info_str(self, query: str, current_user_id: Optional[int] = None, query_embeddings: Optional[List[List[float]]] = None) -> str:
         if not self.user_info:
             return "No known user information."
-
-        # 1. Update LRU with current sender
-        relevant_from_search = []
-        if self.config.memory.user.selective and (query or query_embeddings):
-            results = self.user_collection.query(
-                query_texts=[query] if query_embeddings is None else None,
-                query_embeddings=query_embeddings,
-                n_results=self.config.memory.user.top_k
-            )
-            if results["ids"] and results["ids"][0]:
-                search_ids = [int(sid) for sid in results["ids"][0]]
-                # Most relevant 2 to cache top
-                end = 2 if len(search_ids) >=2 else len(search_ids)
-                for sid in reversed(search_ids[:end]):
-                    self._update_lru(self.state.user_lru, search_ids[0], self.config.memory.user.lru_size)
-                relevant_from_search = search_ids
                 
+        # 1. Update LRU with current sender
         if current_user_id:
             self._update_lru(self.state.user_lru, current_user_id, self.config.memory.user.lru_size)          
 
@@ -871,6 +856,19 @@ Use the provided tools to classify each entry. Each entry should be classified e
         prompt_user_ids = list(self.state.user_lru) # already capped by lru_size
         
         # Add other relevant ones from search if not in prompt_user_ids
+        relevant_from_search = []
+        if self.config.memory.user.selective and (query or query_embeddings):
+            results = self.user_collection.query(
+                query_texts=[query] if query_embeddings is None else None,
+                query_embeddings=query_embeddings,
+                n_results=self.config.memory.user.top_k
+            )
+            
+            if results["ids"] and results["ids"][0]:
+                search_ids = [int(sid) for sid in results["ids"][0]]
+                end = end = 2 if len(search_ids) >=2 else len(search_ids)
+                relevant_from_search = search_ids[:end]
+                
         for rid in relevant_from_search:
             if rid not in prompt_user_ids:
                 if len(prompt_user_ids) >= self.config.memory.user.lru_size + self.config.memory.user.relevant_include:
