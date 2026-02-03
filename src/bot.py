@@ -529,7 +529,7 @@ class PepperBot:
         self.history.clean_expired(self.config.context.history_expiration_hours)
         
         # 2. Check expired short-term memories
-        expired_events = self.memory.check_expirations(self.config.tools.short_term_mem_expiration_days)
+        expired_events = self.memory.check_expirations(self.config.memory.short.expiration_days)
         if expired_events:
             logger.info(f"Consolidating {len(expired_events)} memory events...")
             await self.llm.consolidate_memory(expired_events, self.system_prompt_template)

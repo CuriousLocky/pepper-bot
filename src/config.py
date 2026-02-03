@@ -25,10 +25,6 @@ class ContextConfig(BaseModel):
     max_ai_response_token: int = 1000
     history_expiration_hours: int = 24
 
-class ToolSettings(BaseModel):
-    memory_capacity: int = 100
-    short_term_mem_expiration_days: int = 1
-
 class SearchConfig(BaseModel):
     provider: str = "duckduckgo" # "duckduckgo" or "google"
     google_api_key: Optional[str] = None
@@ -51,11 +47,13 @@ class MemoryShortConfig(BaseModel):
     top_k: int = 20
     always_include_hours: int = 24
     relevant_size: int = 40
+    expiration_days: int = 5
 
 class MemoryLongConfig(BaseModel):
     selective: bool = True
     top_k: int = 30
     relevant_size: int = 50
+    max_entries: int = 50
 
 class MemoryUserConfig(BaseModel):
     selective: bool = True
@@ -87,7 +85,6 @@ class Config(BaseModel):
     api: ApiConfig
     model_params: ModelParams
     context: ContextConfig
-    tools: ToolSettings
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     search: SearchConfig = Field(default_factory=SearchConfig)
     image_generation: ImageGenerationConfig = Field(default_factory=ImageGenerationConfig)

@@ -557,7 +557,12 @@ Use the provided tools to take action.
 """
         
         sys_prompt_base = "You are a memory manager for a chatbot. Your job is to consolidate short-term memories into knowledge (facts, rules, methodologies) or long-term events."
-        sys_prompt = sys_prompt_base + f"\nCurrent Knowledge:\n{self.memory_manager.get_all_knowledges_str()}\n\nCurrent Long-term Memory:\n{self.memory_manager.get_all_long_term_str()}\n\nCurrent User Info:\n{self.memory_manager.get_all_user_info_str()}"
+        
+        # Use only latest N long-term memories as context (configurable limit)
+        max_long_term_examples = self.config.memory.long.max_entries
+        long_term_mem_str = self.memory_manager.get_latest_long_term_str(max_long_term_examples)
+        
+        sys_prompt = sys_prompt_base + f"\nCurrent Knowledge:\n{self.memory_manager.get_all_knowledges_str()}\n\nCurrent Long-term Memory (latest {max_long_term_examples} entries):\n{long_term_mem_str}\n\nCurrent User Info:\n{self.memory_manager.get_all_user_info_str()}"
 
         messages = [
             {"role": "system", "content": sys_prompt},
@@ -578,7 +583,7 @@ Use the provided tools to take action.
             response_message = response.choices[0].message
             if response_message.tool_calls:
                 await self._execute_tools(response_message.tool_calls)
-                
+                  
         except Exception as e:
             print(f"Error consolidating memory: {e}")
             

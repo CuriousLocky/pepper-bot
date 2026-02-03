@@ -789,6 +789,17 @@ Use the provided tools to classify each entry. Each entry should be classified e
         sorted_mem = sorted(self.long_term_mem, key=lambda x: x.timestamp)
         return "\n".join([f"- {e.content}" for e in sorted_mem])
 
+    def get_latest_long_term_str(self, limit: int) -> str:
+        """Returns string representation of the latest N long-term memories."""
+        if not self.long_term_mem:
+            return "No long-term memories."
+        # Sort by timestamp descending (newest first) and take limit
+        sorted_mem = sorted(self.long_term_mem, key=lambda x: x.timestamp, reverse=True)
+        latest_mem = sorted_mem[:limit]
+        # Return in chronological order (oldest first)
+        latest_mem_sorted = sorted(latest_mem, key=lambda x: x.timestamp)
+        return "\n".join([f"- {e.content}" for e in latest_mem_sorted])
+
     async def get_user_info_str(self, query: str, current_user_id: Optional[int] = None, query_embeddings: Optional[List[List[float]]] = None) -> str:
         if not self.user_info:
             return "No known user information."
