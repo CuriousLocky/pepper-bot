@@ -1,0 +1,40 @@
+{
+  "version": 2,
+  "messages": [
+    {
+      "id": "persona",
+      "type": "text",
+      "role": "system",
+      "content_file": "config/system_prompt.txt"
+    },
+    {
+      "id": "background",
+      "type": "text",
+      "role": "system",
+      "content": "Bot name: {{bot_name}}\n\nAvailable skills:\n{{skill_list}}\n\nKnowledges:\n{{knowledges}}"
+    },
+    {
+      "id": "thread",
+      "type": "thread_context"
+    },
+    {
+      "id": "runtime_memory",
+      "type": "text",
+      "role": "user",
+      "content": "Current UTC time: {{date_time}}\nLong-term memory:\n{{long_term_memory}}\n\nKnown user info:\n{{known_user_info}}\n\nShort-term memory:\n{{short_term_memory}}",
+      "omit_if_empty": true
+    },
+    {
+      "id": "response_contract",
+      "type": "text",
+      "role": "user",
+      "content": "Reply with the Telegram message body. Preferred format:\n<telegram_reply>message body</telegram_reply>\nDo not include message IDs, author labels, or extra XML outside the reply."
+    }
+  ],
+  "empty_response_repair_message": {
+    "id": "error_response_repair",
+    "type": "text",
+    "role": "user",
+    "content": "The previous assistant response had no usable Telegram text or used invalid XML. Produce the final Telegram message body now. Preferred format: <telegram_reply>message body</telegram_reply>."
+  }
+}

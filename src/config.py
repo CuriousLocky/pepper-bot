@@ -26,9 +26,11 @@ class ContextConfig(BaseModel):
     history_expiration_hours: int = 24
 
 class SearchConfig(BaseModel):
-    provider: str = "duckduckgo" # "duckduckgo" or "google"
+    provider: str = "duckduckgo" # "duckduckgo", "bing", "google", or "tavily"
+    max_results: int = 5
     google_api_key: Optional[str] = None
     google_cse_id: Optional[str] = None
+    tavily_api_key: Optional[str] = None
 
 class ImageGenerationConfig(BaseModel):
     enabled: bool = False

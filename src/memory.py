@@ -29,11 +29,15 @@ class MemoryState(BaseModel):
     user_lru: List[int] = []       # List of user_ids
 
 class ChromaEmbeddingFunction(chromadb.EmbeddingFunction):
-    def __init__(self, api_key: str, api_url: str, model: str):
+    def __init__(self, api_key: str, api_url: str, model: str, request_format: str = "chat_messages"):
         self.client = OpenAI(api_key=api_key, base_url=api_url)
         self.model = model
+        self.request_format = request_format
 
     def __call__(self, input: chromadb.Documents) -> chromadb.Embeddings:
+        if self.request_format == "standard_input":
+            response = self.client.embeddings.create(input=list(input), model=self.model)
+            return [data.embedding for data in response.data]
         results = []
         for item in input:
             response = self.client.embeddings.create(
@@ -65,12 +69,15 @@ class MemoryManager:
         self.chroma_client = chromadb.PersistentClient(path=str(self.db_path))
         
         # Setup Embedding Function
-        api_key = config.memory.api_key or config.api.key
-        api_url = config.memory.api_url or config.api.url
+        embedding_backend = getattr(config, "embedding_backend", None)
+        api_key = getattr(embedding_backend, "api_key", "") or getattr(config.memory, "api_key", "") or config.api.key
+        api_url = getattr(embedding_backend, "api_url", "") or getattr(config.memory, "api_url", "") or config.api.url
+        embedding_model = getattr(embedding_backend, "model", "") or getattr(config.memory, "embedding_model", "text-embedding-3-small")
         self.embedding_fn = ChromaEmbeddingFunction(
             api_key=api_key,
             api_url=api_url,
-            model=config.memory.embedding_model
+            model=embedding_model,
+            request_format=getattr(getattr(config, "embedding_backend", None), "request_format", "chat_messages")
         )
         self.async_client = AsyncOpenAI(api_key=api_key, base_url=api_url)
         
@@ -685,6 +692,35 @@ Use the provided tools to classify each entry. Each entry should be classified e
         """Fetch embeddings for a list of strings or multimodal inputs using the async client."""
         if not texts:
             return []
+        embedding_backend = getattr(self.config, "embedding_backend", None)
+        request_format = getattr(embedding_backend, "request_format", "chat_messages")
+        supports_multimodal = getattr(embedding_backend, "supports_multimodal", True)
+        embedding_model = getattr(embedding_backend, "model", "") or getattr(self.config.memory, "embedding_model", "text-embedding-3-small")
+        if request_format == "standard_input":
+            standard_inputs = []
+            for item in texts:
+                if isinstance(item, list):
+                    text_part = ""
+                    has_image = False
+                    for part in item:
+                        if part.get("type") == "text":
+                            text_part += part.get("text", "")
+                        elif part.get("type") == "image_url":
+                            has_image = True
+                    if has_image:
+                        logger.warning("Embedding request contains images but standard_input format only supports text; images are omitted.")
+                    standard_inputs.append(text_part)
+                else:
+                    standard_inputs.append(item)
+            try:
+                response = await self.async_client.embeddings.create(
+                    input=standard_inputs,
+                    model=embedding_model,
+                )
+                return [data.embedding for data in response.data]
+            except Exception as e:
+                logger.error(f"Error fetching embeddings: {e}")
+                return []
         
         processed_inputs = []
         for item in texts:
@@ -697,7 +733,7 @@ Use the provided tools to classify each entry. Each entry should be classified e
                     elif part.get("type") == "image_url":
                         image_part = part.get("image_url", {})
                 
-                if image_part:
+                if image_part and supports_multimodal:
                     logger.info("image part length: {}".format(len(image_part.get("url", ""))))
                     processed_inputs.append(
                         {
@@ -710,6 +746,8 @@ Use the provided tools to classify each entry. Each entry should be classified e
                     )
                     # processed_inputs.append([image_part.get("url")])
                 else:
+                    if image_part and not supports_multimodal:
+                        logger.warning("Embedding request contains images but multimodal embeddings are disabled; images are omitted.")
                     # Fallback if no image found in list (shouldn't happen for multimodal intent)
                     processed_inputs.append(
                         {
@@ -734,7 +772,7 @@ Use the provided tools to classify each entry. Each entry should be classified e
             # logger.info(f"extra_body being sent for embeddings: {"messages": processed_inputs}")
             response = await self.async_client.embeddings.create(
                 input=[],
-                model=self.config.memory.embedding_model,
+                model=embedding_model,
                 extra_body={"messages": processed_inputs}
             )
             return [data.embedding for data in response.data]

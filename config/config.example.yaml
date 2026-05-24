@@ -1,0 +1,155 @@
+bot:
+  # Telegram bot token. Can also be set with PEPPER_BOT_TOKEN.
+  token: "${PEPPER_BOT_TOKEN}"
+  # Empty list means all chats are allowed. Otherwise only these chat IDs can activate the bot.
+  chat_whitelist: []
+  command: "pepper"
+  name: "Pepper"
+  nicknames: []
+
+admin:
+  # Telegram user IDs that are treated as bot admins. Admins cannot be blacklisted.
+  ids: []
+  # Chats/users that receive major failure reports. If empty, admin.ids are used.
+  report_chat_ids: []
+  report_major_failures: true
+  include_context_preview: true
+  context_preview_chars: 2000
+
+api:
+  # Default OpenAI-compatible chat settings. These are used as fallbacks by chat_backend,
+  # embedding_backend, image_generation, and tool_model when their endpoint/key/model is empty.
+  url: "https://api.openai.com/v1"
+  key: "${PEPPER_API_KEY}"
+  model: "gpt-4o-mini"
+  # Legacy/default vision capability for chat. chat_backend.supports_vision overrides this when set.
+  supports_vision: false
+
+chat_backend:
+  # Available now: openai_chat. Planned: openai_responses.
+  provider: "openai_chat"
+  # Leave empty to use api.url/api.key/api.model.
+  api_url: ""
+  api_key: ""
+  model: ""
+  supports_tools: true
+  # null means inherit api.supports_vision. true/false overrides it.
+  supports_vision: null
+  supports_reasoning_effort: true
+
+embedding_backend:
+  # Available now: vllm.
+  provider: "vllm"
+  # Leave empty to use api.url/api.key. Model should normally be set explicitly for embeddings.
+  api_url: ""
+  api_key: ""
+  model: "text-embedding-3-small"
+  # chat_messages: sends input=[] plus extra_body.messages for vLLM/chat-template embedding models.
+  # standard_input: sends normal OpenAI embeddings input=[...]. Images are omitted with a warning.
+  request_format: "chat_messages" # chat_messages | standard_input
+  supports_multimodal: true
+
+model_params:
+  temperature: 0.7
+  # Optional. Only sent when chat_backend.supports_reasoning_effort is true.
+  reasoning_effort: null
+
+response:
+  # Sent when the backend still produces no usable final text after retries.
+  fallback_text: "抱歉，刚才脑袋短路了。"
+  # Retries for empty output or invalid XML-looking output. Tool calls are not re-run during repair.
+  error_response_retries: 1
+  max_tool_rounds: 8
+
+telegram:
+  # Telegram hard limit is 4096 chars. chunk_chars should be <= max_message_chars.
+  max_message_chars: 4096
+  chunk_chars: 3900
+  send_retries: 2
+  # Telegram sends media albums as separate updates. The bot processes the album
+  # after no new item with the same media_group_id arrives for this many seconds.
+  media_group_wait_seconds: 1.0
+  # For each Telegram photo, choose the largest provided size with width*height <= this.
+  # If all provided sizes are larger, choose the smallest one and resize it to this area.
+  image_max_area: 1048576
+  expired_thread_notice: "这段对话已经过期啦。回复这条消息的话，我会带着刚才的引用重新开始。"
+
+context:
+  # Total target prompt budget for context construction.
+  max_context_window: 10000
+  max_ai_response_token: 1000
+  history_expiration_hours: 24
+  # Summarize older thread history when estimated prompt tokens exceed this ratio of max_context_window.
+  summary_trigger_ratio: 0.8
+  # Number of latest logical thread messages kept verbatim when older history is summarized.
+  preserve_recent_messages: 20
+
+memory:
+  # ChromaDB persistence path. Embedding endpoint/model settings live in embedding_backend.
+  db_path: "data/chroma_db"
+  short:
+    selective: true
+    # Number of vector search hits used to refresh the short-term relevant LRU set.
+    top_k: 20
+    # Recent short-term memories newer than this are always included.
+    always_include_hours: 24
+    # Max older relevant short-term memory entries included after LRU filtering.
+    relevant_size: 40
+    expiration_days: 5
+  long:
+    selective: true
+    # Number of vector search hits used to refresh the long-term relevant LRU set.
+    top_k: 30
+    # Max relevant long-term memory entries included.
+    relevant_size: 50
+    # Max latest long-term examples shown to the maintenance/consolidation model.
+    max_entries: 50
+  user:
+    selective: true
+    top_k: 5
+    # Recently active users kept in prompt.
+    lru_size: 8
+    # Additional relevant users from vector search that may be included beyond the LRU set.
+    relevant_include: 5
+
+black_list:
+  enable: false
+  # Maximum duration the block_user tool may request.
+  max_minute: 30
+  blocked_messages:
+    - "You are blocked by this bot."
+
+skills:
+  enabled: true
+  root_path: "skills"
+
+search:
+  # Options: duckduckgo, bing, google, tavily.
+  # duckduckgo uses no API key but may be unreliable depending on network/package behavior.
+  # bing uses public HTML search and requires no API key.
+  # google requires google_api_key and google_cse_id.
+  # tavily requires tavily_api_key.
+  provider: "duckduckgo"
+  max_results: 5
+  google_api_key: null
+  google_cse_id: null
+  tavily_api_key: null
+
+image_generation:
+  enabled: false
+  # Leave empty to use api.url/api.key.
+  api_url: ""
+  api_key: ""
+  model: "dall-e-3"
+  # Generated images are resized by this factor before being stored as history context.
+  resolution_scale: 0.5
+
+tool_model:
+  # Used for history summarization and maintenance tasks. Leave endpoint/key empty to use api.url/api.key.
+  api_url: ""
+  api_key: ""
+  model: "gpt-4o-mini"
+
+attachments:
+  # Stores downloaded/migrated/generated images referenced by active histories.
+  root_path: "data/attachments"
