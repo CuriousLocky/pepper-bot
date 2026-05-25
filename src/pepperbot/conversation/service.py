@@ -79,7 +79,7 @@ class ConversationService:
             current_message = self._append_user_message(thread, incoming, reply_to_id)
             self.history.save()
             try:
-                memory_sections = await self._memory_context(incoming)
+                memory_sections = await self._memory_context(incoming, runtime.bot, thread)
                 context = await self.context_builder.build(
                     thread,
                     current_message.id,
@@ -334,7 +334,12 @@ class ConversationService:
             created_at=reference.created_at,
         )
 
-    async def _memory_context(self, incoming: IncomingMessage) -> Dict[str, str]:
+    async def _memory_context(
+        self,
+        incoming: IncomingMessage,
+        bot: Any = None,
+        thread: Optional[Thread] = None,
+    ) -> Dict[str, str]:
         query_text = incoming.text or ""
         query_embeddings = None
         try:
@@ -346,9 +351,36 @@ class ConversationService:
                     if data_uri:
                         parts.append({"type": "image_url", "image_url": {"url": data_uri}})
                 query_input = parts
-            query_embeddings = await self.memory_manager.get_embeddings([query_input]) if query_text or incoming.attachments else None
-        except Exception:
-            logger.warning("Failed to fetch query embedding; falling back to text retrieval", exc_info=True)
+            should_embed = bool(query_text or incoming.attachments)
+            query_embeddings = await self.memory_manager.get_embeddings([query_input]) if should_embed else None
+            if should_embed and not query_embeddings:
+                details = (
+                    "Embedding endpoint returned an empty result. Falling back to text-only memory retrieval.\n"
+                    f"chat_id={incoming.chat_id}, user_id={incoming.user_id}, text_preview={query_text[:300]!r}"
+                )
+                logger.warning(details)
+                if bot is not None:
+                    await self.reporter.report(
+                        bot,
+                        "Embedding retrieval returned empty result",
+                        details,
+                        context_preview=self._thread_preview(thread) if thread else "",
+                    )
+                query_embeddings = None
+        except Exception as exc:
+            details = (
+                "Failed to fetch query embedding; falling back to text-only memory retrieval.\n"
+                f"error={exc!r}\nchat_id={incoming.chat_id}, user_id={incoming.user_id}, text_preview={query_text[:300]!r}"
+            )
+            logger.warning(details, exc_info=True)
+            if bot is not None:
+                await self.reporter.report(
+                    bot,
+                    "Embedding retrieval failed",
+                    details,
+                    context_preview=self._thread_preview(thread) if thread else "",
+                )
+            query_embeddings = None
         short_mem = await self.memory_manager.get_short_term_str(query_text, query_embeddings=query_embeddings)
         long_mem = await self.memory_manager.get_long_term_str(query_text, query_embeddings=query_embeddings)
         knowledges = self.memory_manager.get_all_knowledges_str()

@@ -3,6 +3,7 @@ import re
 import yaml
 import asyncio
 import logging
+import hashlib
 import chromadb
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
@@ -79,24 +80,28 @@ class MemoryManager:
             model=embedding_model,
             request_format=getattr(getattr(config, "embedding_backend", None), "request_format", "chat_messages")
         )
+        self.embedding_signature = self._embedding_signature(embedding_model)
         self.async_client = AsyncOpenAI(api_key=api_key, base_url=api_url)
         
         # Setup Tool Model Client for migration and classification
         tool_api_key = config.tool_model.api_key or config.api.key
         tool_api_url = config.tool_model.api_url or config.api.url
         self.tool_client = AsyncOpenAI(api_key=tool_api_key, base_url=tool_api_url)
+        self.collection_bases = ("short_term", "long_term", "users")
+        self.active_collection_names = {base: self._collection_name(base) for base in self.collection_bases}
+        self._cleanup_stale_vector_collections()
         
         # Collections
         self.short_collection = self.chroma_client.get_or_create_collection(
-            name="short_term", 
+            name=self.active_collection_names["short_term"], 
             embedding_function=self.embedding_fn
         )
         self.long_collection = self.chroma_client.get_or_create_collection(
-            name="long_term", 
+            name=self.active_collection_names["long_term"], 
             embedding_function=self.embedding_fn
         )
         self.user_collection = self.chroma_client.get_or_create_collection(
-            name="users", 
+            name=self.active_collection_names["users"], 
             embedding_function=self.embedding_fn
         )
         
@@ -114,6 +119,57 @@ class MemoryManager:
 
         # Check and perform version migration if needed
         self._check_and_migrate_sync()
+
+    def _embedding_signature(self, embedding_model: str) -> Dict[str, str]:
+        embedding_backend = getattr(self.config, "embedding_backend", None)
+        return {
+            "embedding_provider": str(getattr(embedding_backend, "provider", "vllm")),
+            "embedding_model": str(embedding_model),
+            "embedding_request_format": str(getattr(embedding_backend, "request_format", "chat_messages")),
+            "embedding_multimodal": str(getattr(embedding_backend, "supports_multimodal", True)),
+        }
+
+    def _collection_name(self, base_name: str) -> str:
+        raw = json.dumps(self.embedding_signature, sort_keys=True)
+        suffix = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
+        return f"{base_name}_{suffix}"
+
+    def _cleanup_stale_vector_collections(self) -> int:
+        removed = 0
+        active_names = set(self.active_collection_names.values())
+        try:
+            collections = self.chroma_client.list_collections()
+        except Exception as e:
+            logger.warning(f"Failed to list Chroma collections for cleanup: {e}")
+            return 0
+        for collection in collections:
+            name = collection.name if hasattr(collection, "name") else str(collection)
+            if not self._is_stale_managed_collection(name, active_names):
+                continue
+            try:
+                self.chroma_client.delete_collection(name)
+                removed += 1
+                logger.info(f"Deleted stale Chroma collection: {name}")
+            except Exception as e:
+                logger.warning(f"Failed to delete stale Chroma collection {name}: {e}")
+        return removed
+
+    def _is_stale_managed_collection(self, name: str, active_names: set[str]) -> bool:
+        if name in active_names:
+            return False
+        for base in self.collection_bases:
+            if name == base:
+                return True
+            if name.startswith(f"{base}_"):
+                return True
+        return False
+
+    def _metadata_matches_embedding_signature(self, metadata: Optional[Dict[str, Any]]) -> bool:
+        metadata = metadata or {}
+        return all(str(metadata.get(key)) == str(value) for key, value in self.embedding_signature.items())
+
+    def _metadata_with_embedding_signature(self, metadata: Dict[str, Any]) -> Dict[str, Any]:
+        return {**metadata, **self.embedding_signature}
 
     def _sync_memory(self):
         """Syncs file-based memory with ChromaDB, verifying IDs and updating embeddings if content changed."""
@@ -138,8 +194,9 @@ class MemoryManager:
             
         # 4. Upsert missing or changed
         # We can optimize by only fetching existing for valid_uids
-        existing = self.user_collection.get(ids=list(valid_uids))
+        existing = self.user_collection.get(ids=list(valid_uids)) if valid_uids else {"ids": [], "documents": [], "metadatas": []}
         existing_map = {id: doc for id, doc in zip(existing['ids'], existing['documents'])} if existing['ids'] else {}
+        existing_meta_map = {id: meta for id, meta in zip(existing['ids'], existing.get('metadatas', []))} if existing['ids'] else {}
         
         to_upsert_ids = []
         to_upsert_docs = []
@@ -150,10 +207,14 @@ class MemoryManager:
             doc_content = f"{info.name}: {info.description}"
             
             # Check if needs update (missing or content changed)
-            if sid not in existing_map or existing_map[sid] != doc_content:
+            if (
+                sid not in existing_map
+                or existing_map[sid] != doc_content
+                or not self._metadata_matches_embedding_signature(existing_meta_map.get(sid))
+            ):
                 to_upsert_ids.append(sid)
                 to_upsert_docs.append(doc_content)
-                to_upsert_metas.append({"user_id": uid})
+                to_upsert_metas.append(self._metadata_with_embedding_signature({"user_id": uid}))
         
         if to_upsert_ids:
             logger.info(f"Syncing {len(to_upsert_ids)} user entries to Chroma...")
@@ -194,6 +255,7 @@ class MemoryManager:
         ids = [e.id for e in memory_list]
         existing = collection.get(ids=ids)
         existing_map = {id: doc for id, doc in zip(existing['ids'], existing['documents'])} if existing['ids'] else {}
+        existing_meta_map = {id: meta for id, meta in zip(existing['ids'], existing.get('metadatas', []))} if existing['ids'] else {}
         
         to_upsert_ids = []
         to_upsert_docs = []
@@ -202,10 +264,14 @@ class MemoryManager:
         for event in memory_list:
             # Check if needs update (missing in DB or content mismatch)
             # This handles cases where ID exists but content was manually edited in the JSON file
-            if event.id not in existing_map or existing_map[event.id] != event.content:
+            if (
+                event.id not in existing_map
+                or existing_map[event.id] != event.content
+                or not self._metadata_matches_embedding_signature(existing_meta_map.get(event.id))
+            ):
                 to_upsert_ids.append(event.id)
                 to_upsert_docs.append(event.content)
-                to_upsert_metas.append({"timestamp": event.timestamp.isoformat()})
+                to_upsert_metas.append(self._metadata_with_embedding_signature({"timestamp": event.timestamp.isoformat()}))
         
         if to_upsert_ids:
             logger.info(f"Syncing {len(to_upsert_ids)} {name} events to Chroma...")
@@ -635,7 +701,7 @@ Use the provided tools to classify each entry. Each entry should be classified e
         self.short_collection.add(
             ids=[event_id],
             documents=[content],
-            metadatas=[{"timestamp": event.timestamp.isoformat()}]
+            metadatas=[self._metadata_with_embedding_signature({"timestamp": event.timestamp.isoformat()})]
         )
         
         await asyncio.to_thread(self._save_short_term)
@@ -649,7 +715,7 @@ Use the provided tools to classify each entry. Each entry should be classified e
         self.long_collection.add(
             ids=[event_id],
             documents=[content],
-            metadatas=[{"timestamp": event.timestamp.isoformat()}]
+            metadatas=[self._metadata_with_embedding_signature({"timestamp": event.timestamp.isoformat()})]
         )
         
         await asyncio.to_thread(self._save_long_term)
@@ -671,7 +737,7 @@ Use the provided tools to classify each entry. Each entry should be classified e
         self.user_collection.upsert(
             ids=[str(user_id)],
             documents=[f"{name}: {description}"],
-            metadatas=[{"user_id": user_id}]
+            metadatas=[self._metadata_with_embedding_signature({"user_id": user_id})]
         )
         
         # LRU update logic for user is handled in get_user_info_str usually, 
@@ -792,18 +858,21 @@ Use the provided tools to classify each entry. Each entry should be classified e
         # 2. Search for relevant older events
         relevant_ids = []
         if self.config.memory.short.selective and (query or query_embeddings):
-            results = self.short_collection.query(
-                query_texts=[query] if query_embeddings is None else None,
-                query_embeddings=query_embeddings,
-                n_results=self.config.memory.short.top_k
-            )
-            if results["ids"] and results["ids"][0]:
-                # IDs are strings
-                search_ids = results["ids"][0]
-                # Update LRU with these (reversed so most relevant is last added to top)
-                for sid in reversed(search_ids):
-                    self._update_lru(self.state.short_term_lru, sid, self.config.memory.short.relevant_size)
-                relevant_ids = self.state.short_term_lru
+            try:
+                results = self.short_collection.query(
+                    query_texts=None if query_embeddings else [query],
+                    query_embeddings=query_embeddings or None,
+                    n_results=self.config.memory.short.top_k
+                )
+                if results["ids"] and results["ids"][0]:
+                    # IDs are strings
+                    search_ids = results["ids"][0]
+                    # Update LRU with these (reversed so most relevant is last added to top)
+                    for sid in reversed(search_ids):
+                        self._update_lru(self.state.short_term_lru, sid, self.config.memory.short.relevant_size)
+                    relevant_ids = self.state.short_term_lru
+            except Exception as e:
+                logger.warning(f"Short-term memory vector search failed; continuing without search results: {e}")
         
         # Combine. Keep order of IDs in LRU but filter those that are in always_include or don't exist
         # Wait, the prompt should include all always_include PLUS relevant from LRU up to relevant_size
@@ -837,15 +906,18 @@ Use the provided tools to classify each entry. Each entry should be classified e
             return "No long-term memories."
 
         if self.config.memory.long.selective and (query or query_embeddings):
-            results = self.long_collection.query(
-                query_texts=[query] if query_embeddings is None else None,
-                query_embeddings=query_embeddings,
-                n_results=self.config.memory.long.top_k
-            )
-            if results["ids"] and results["ids"][0]:
-                search_ids = results["ids"][0]
-                for sid in reversed(search_ids):
-                    self._update_lru(self.state.long_term_lru, sid, self.config.memory.long.relevant_size)
+            try:
+                results = self.long_collection.query(
+                    query_texts=None if query_embeddings else [query],
+                    query_embeddings=query_embeddings or None,
+                    n_results=self.config.memory.long.top_k
+                )
+                if results["ids"] and results["ids"][0]:
+                    search_ids = results["ids"][0]
+                    for sid in reversed(search_ids):
+                        self._update_lru(self.state.long_term_lru, sid, self.config.memory.long.relevant_size)
+            except Exception as e:
+                logger.warning(f"Long-term memory vector search failed; continuing without search results: {e}")
         
         # Include from LRU
         include_ids = set(self.state.long_term_lru[:self.config.memory.long.relevant_size])
@@ -883,35 +955,44 @@ Use the provided tools to classify each entry. Each entry should be classified e
         if not self.user_info:
             return "No known user information."
                 
-        # 1. Update LRU with current sender
-        if current_user_id:
-            self._update_lru(self.state.user_lru, current_user_id, self.config.memory.user.lru_size)          
-
-        # Build final list
-        # "The prompt of this round should include information of: [A, B, C, D, E] + [F]"
-        # Where [A, B, C, D, E] is LRU cache, and F is a relevant one NOT in LRU. 
-        
-        prompt_user_ids = list(self.state.user_lru) # already capped by lru_size
-        
-        # Add other relevant ones from search if not in prompt_user_ids
-        relevant_from_search = []
+        # Update order is intentional:
+        # 1. Vector-search hits refresh the LRU first.
+        # 2. The current known sender refreshes the LRU last, making it the most
+        #    recently accessed user after the whole retrieval process.
+        current_known_user_id = current_user_id if current_user_id in self.user_info else None
+        search_ids: List[int] = []
         if self.config.memory.user.selective and (query or query_embeddings):
-            results = self.user_collection.query(
-                query_texts=[query] if query_embeddings is None else None,
-                query_embeddings=query_embeddings,
-                n_results=self.config.memory.user.top_k
-            )
-            
-            if results["ids"] and results["ids"][0]:
-                search_ids = [int(sid) for sid in results["ids"][0]]
-                end = end = 2 if len(search_ids) >=2 else len(search_ids)
-                relevant_from_search = search_ids[:end]
+            try:
+                results = self.user_collection.query(
+                    query_texts=None if query_embeddings else [query],
+                    query_embeddings=query_embeddings or None,
+                    n_results=self.config.memory.user.top_k
+                )
                 
-        for rid in relevant_from_search:
-            if rid not in prompt_user_ids:
-                if len(prompt_user_ids) >= self.config.memory.user.lru_size + self.config.memory.user.relevant_include:
-                    break
-                prompt_user_ids.append(rid)
+                if results["ids"] and results["ids"][0]:
+                    for sid in results["ids"][0]:
+                        try:
+                            uid = int(sid)
+                        except (TypeError, ValueError):
+                            continue
+                        if uid in self.user_info:
+                            search_ids.append(uid)
+                    logger.debug(
+                        "User info vector search returned ids=%s for current_user_id=%s query_preview=%r",
+                        search_ids,
+                        current_user_id,
+                        query[:120],
+                    )
+            except Exception as e:
+                logger.warning(f"User info vector search failed; continuing with LRU/current user info: {e}")
+
+        for uid in reversed(search_ids):
+            self._update_lru(self.state.user_lru, uid, self.config.memory.user.lru_size)
+
+        if current_known_user_id is not None:
+            self._update_lru(self.state.user_lru, current_known_user_id, self.config.memory.user.lru_size)
+
+        prompt_user_ids = list(self.state.user_lru)
 
         to_prompt = []
         for uid in prompt_user_ids:

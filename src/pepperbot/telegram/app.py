@@ -205,7 +205,9 @@ class PepperBotApplication:
         self.history.save()
         try:
             memory_sections = await self.service._memory_context(
-                type("ScheduledIncoming", (), {"text": text, "attachments": [], "user_id": None})()
+                type("ScheduledIncoming", (), {"text": text, "attachments": [], "user_id": None, "chat_id": chat_id})(),
+                context.bot,
+                thread,
             )
             context_result = await self.context_builder.build(
                 thread,
