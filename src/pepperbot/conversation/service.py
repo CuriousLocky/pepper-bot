@@ -308,12 +308,13 @@ class ConversationService:
         message = ConversationMessage(
             id=thread.next_message_id(),
             role="user",
-            author=Actor(id=incoming.user_id, name=incoming.user_name, is_bot=False),
+            author=self._actor_for_user(incoming.user_id, incoming.user_name, is_bot=False),
             content=incoming.text or ("[Image]" if incoming.attachments else "Hello!"),
             reply_to=reply_to_id,
             telegram_refs=incoming.telegram_refs or [TelegramRef(chat_id=incoming.chat_id, message_id=incoming.telegram_message_id)],
             attachments=incoming.attachments,
             created_at=incoming.created_at,
+            metadata={"telegram_user_name": incoming.user_name},
         )
         self.history.add_message(thread, message)
         return message
@@ -327,12 +328,22 @@ class ConversationService:
         return ConversationMessage(
             id=message_id,
             role="assistant" if reference.is_bot else "user",
-            author=Actor(id=reference.author_id, name=reference.author_name, is_bot=reference.is_bot),
+            author=self._actor_for_user(reference.author_id, reference.author_name, is_bot=reference.is_bot),
             content=reference.text or ("[Image]" if reference.attachments else ""),
             telegram_refs=[reference.telegram_ref],
             attachments=reference.attachments,
             created_at=reference.created_at,
+            metadata={"telegram_user_name": reference.author_name},
         )
+
+    def _actor_for_user(self, user_id: Optional[int], telegram_name: str, is_bot: bool) -> Actor:
+        if is_bot:
+            return Actor(id=user_id, name=self.config.bot.name, is_bot=True)
+        if user_id is not None and user_id in self.memory_manager.user_info:
+            return Actor(id=user_id, name=self.memory_manager.user_info[user_id].name, is_bot=False)
+        if user_id is not None:
+            return Actor(id=user_id, name=f"user-{user_id}", is_bot=False)
+        return Actor(id=None, name="user-unknown", is_bot=False)
 
     async def _memory_context(
         self,
