@@ -1,6 +1,8 @@
 from datetime import datetime
 from types import SimpleNamespace
 
+import pytest
+
 from pepperbot.config import Config
 from pepperbot.conversation.models import IncomingMessage, ReferencedMessage
 from pepperbot.conversation.service import ConversationService
@@ -121,3 +123,44 @@ def test_referenced_known_user_uses_known_name():
     message = service._message_from_reference(SimpleNamespace(), reference, "m0")
 
     assert message.author.name == "AliceAlias"
+
+
+@pytest.mark.asyncio
+async def test_known_usernames_are_updated_from_incoming_and_referenced_messages():
+    class Memory:
+        def __init__(self):
+            self.user_info = {
+                123: UserInfoEntry(user_id=123, name="AliceAlias", description="Known"),
+                456: UserInfoEntry(user_id=456, name="BobAlias", description="Known"),
+            }
+            self.updates = []
+
+        async def update_user_telegram_username(self, user_id, username):
+            self.updates.append((user_id, username))
+            return True
+
+    service = make_service()
+    service.memory_manager = Memory()
+    incoming = IncomingMessage(
+        chat_id=1,
+        telegram_message_id=10,
+        user_id=123,
+        user_name="TelegramAlice",
+        telegram_username="@alice",
+        text="hello",
+        created_at=datetime.now(),
+        is_command=True,
+        is_reply_to_bot=False,
+        referenced_message=ReferencedMessage(
+            telegram_ref=TelegramRef(chat_id=1, message_id=9),
+            author_id=456,
+            author_name="TelegramBob",
+            author_telegram_username="bob",
+            is_bot=False,
+            text="referenced",
+        ),
+    )
+
+    await service._update_known_usernames(incoming)
+
+    assert service.memory_manager.updates == [(123, "@alice"), (456, "bob")]

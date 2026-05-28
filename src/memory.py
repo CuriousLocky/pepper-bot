@@ -8,10 +8,19 @@ import chromadb
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional, Any, Union, Tuple
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from openai import AsyncOpenAI, OpenAI
 
 logger = logging.getLogger(__name__)
+
+
+def normalize_telegram_username(username: Optional[str]) -> Optional[str]:
+    if not username:
+        return None
+    username = username.strip()
+    if not username:
+        return None
+    return username if username.startswith("@") else f"@{username}"
 
 class MemoryEvent(BaseModel):
     content: str
@@ -23,6 +32,12 @@ class UserInfoEntry(BaseModel):
     user_id: int
     name: str
     description: str
+    telegram_username: Optional[str] = None
+
+    @field_validator("telegram_username")
+    @classmethod
+    def _normalize_telegram_username_field(cls, username: Optional[str]) -> Optional[str]:
+        return normalize_telegram_username(username)
 
 class MemoryState(BaseModel):
     short_term_lru: List[str] = [] # List of IDs
@@ -204,7 +219,7 @@ class MemoryManager:
 
         for uid, info in self.user_info.items():
             sid = str(uid)
-            doc_content = f"{info.name}: {info.description}"
+            doc_content = self._format_user_doc(info)
             
             # Check if needs update (missing or content changed)
             if (
@@ -728,15 +743,51 @@ Use the provided tools to classify each entry. Each entry should be classified e
         
         await asyncio.to_thread(self._save_knowledges)
 
-    async def update_user_info(self, user_id: int, name: str, description: str):
+    def _format_user_doc(self, info: UserInfoEntry) -> str:
+        if info.telegram_username:
+            return f"{info.name} {info.telegram_username}: {info.description}"
+        return f"{info.name}: {info.description}"
+
+    def _format_user_prompt_line(self, info: UserInfoEntry) -> str:
+        username = info.telegram_username or "unknown"
+        return f"- {info.name} ({info.user_id})\n  Telegram username: {username}\n  Description: {info.description}"
+
+    def _normalize_telegram_username(self, username: Optional[str]) -> Optional[str]:
+        return normalize_telegram_username(username)
+
+    async def update_user_telegram_username(self, user_id: int, telegram_username: Optional[str]) -> bool:
+        normalized = self._normalize_telegram_username(telegram_username)
+        if user_id not in self.user_info:
+            return False
+        entry = self.user_info[user_id]
+        if entry.telegram_username == normalized:
+            return False
+        entry.telegram_username = normalized
+        self.user_collection.upsert(
+            ids=[str(user_id)],
+            documents=[self._format_user_doc(entry)],
+            metadatas=[self._metadata_with_embedding_signature({"user_id": user_id})]
+        )
+        await asyncio.to_thread(self._save_user_info)
+        return True
+
+    async def update_user_info(
+        self,
+        user_id: int,
+        name: str,
+        description: str,
+        telegram_username: Optional[str] = None,
+    ):
         description = re.sub(r'\n+', ' ', description).strip()
-        entry = UserInfoEntry(user_id=user_id, name=name, description=description)
+        if telegram_username is None and user_id in self.user_info:
+            telegram_username = self.user_info[user_id].telegram_username
+        entry = UserInfoEntry(user_id=user_id, name=name, description=description, telegram_username=telegram_username)
         self.user_info[user_id] = entry
         
         # Update Chroma
         self.user_collection.upsert(
             ids=[str(user_id)],
-            documents=[f"{name}: {description}"],
+            documents=[self._format_user_doc(entry)],
             metadatas=[self._metadata_with_embedding_signature({"user_id": user_id})]
         )
         
@@ -998,7 +1049,7 @@ Use the provided tools to classify each entry. Each entry should be classified e
         for uid in prompt_user_ids:
             if uid in self.user_info:
                 info = self.user_info[uid]
-                to_prompt.append(f"- {info.name} ({info.user_id}): {info.description}")
+                to_prompt.append(self._format_user_prompt_line(info))
 
         await asyncio.to_thread(self._save_state)
 
@@ -1010,7 +1061,7 @@ Use the provided tools to classify each entry. Each entry should be classified e
         """Returns string representation of ALL user info."""
         if not self.user_info:
             return "No known user information."
-        return "\n".join([f"- {info.name} ({info.user_id}): {info.description}" for info in self.user_info.values()])
+        return "\n".join([self._format_user_prompt_line(info) for info in self.user_info.values()])
 
     def check_expirations(self, expiration_days: int) -> List[MemoryEvent]:
         now = datetime.now(timezone.utc)

@@ -62,6 +62,8 @@ class ConversationService:
         if self.config.bot.chat_whitelist and incoming.chat_id not in self.config.bot.chat_whitelist:
             return ConversationResult(handled=False, reason="chat_not_whitelisted")
 
+        await self._update_known_usernames(incoming)
+
         thread, reply_to_id, should_call_ai = await self._resolve_thread(incoming, runtime)
         if not thread:
             return ConversationResult(handled=False, reason="thread_not_resolved")
@@ -314,7 +316,7 @@ class ConversationService:
             telegram_refs=incoming.telegram_refs or [TelegramRef(chat_id=incoming.chat_id, message_id=incoming.telegram_message_id)],
             attachments=incoming.attachments,
             created_at=incoming.created_at,
-            metadata={"telegram_user_name": incoming.user_name},
+            metadata={"telegram_user_name": incoming.user_name, "telegram_username": incoming.telegram_username},
         )
         self.history.add_message(thread, message)
         return message
@@ -333,7 +335,7 @@ class ConversationService:
             telegram_refs=[reference.telegram_ref],
             attachments=reference.attachments,
             created_at=reference.created_at,
-            metadata={"telegram_user_name": reference.author_name},
+            metadata={"telegram_user_name": reference.author_name, "telegram_username": reference.author_telegram_username},
         )
 
     def _actor_for_user(self, user_id: Optional[int], telegram_name: str, is_bot: bool) -> Actor:
@@ -344,6 +346,21 @@ class ConversationService:
         if user_id is not None:
             return Actor(id=user_id, name=f"user-{user_id}", is_bot=False)
         return Actor(id=None, name="user-unknown", is_bot=False)
+
+    async def _update_known_usernames(self, incoming: IncomingMessage) -> None:
+        updater = getattr(self.memory_manager, "update_user_telegram_username", None)
+        if updater is None:
+            return
+        updates = [(incoming.user_id, incoming.telegram_username)]
+        if incoming.referenced_message and not incoming.referenced_message.is_bot:
+            updates.append((incoming.referenced_message.author_id, incoming.referenced_message.author_telegram_username))
+        for user_id, username in updates:
+            if user_id is None or user_id not in self.memory_manager.user_info:
+                continue
+            try:
+                await updater(user_id, username)
+            except Exception:
+                logger.warning("Failed to update Telegram username for user %s", user_id, exc_info=True)
 
     async def _memory_context(
         self,

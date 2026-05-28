@@ -59,6 +59,19 @@ class ToolExecutor:
         if name == "add_short_term_memory":
             await self.memory_manager.add_short_term_event(str(args.get("content", "")))
             return "Short-term memory added successfully."
+        if name == "update_user_info":
+            telegram_username = args.get("telegram_username")
+            if telegram_username is not None:
+                telegram_username = str(telegram_username).strip()
+                if not telegram_username.startswith("@"):
+                    return "Error: telegram_username must start with @."
+            await self.memory_manager.update_user_info(
+                int(args.get("user_id", 0)),
+                str(args.get("name", "")),
+                str(args.get("description", "")),
+                telegram_username=telegram_username,
+            )
+            return "User info updated successfully."
         if name == "web_search":
             return json.dumps(web_search(str(args.get("query", "")), self.config.search), ensure_ascii=False)
         if name == "get_url_content":

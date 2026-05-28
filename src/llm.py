@@ -149,6 +149,11 @@ class LLMClient:
                             "description": {
                                 "type": "string",
                                 "description": "Description of the user's personality, habits, etc."
+                            },
+                            "telegram_username": {
+                                "type": "string",
+                                "description": "Optional Telegram username. Must start with @, for example @alice.",
+                                "pattern": "^@"
                             }
                         },
                         "required": ["user_id", "name", "description"]
@@ -375,10 +380,23 @@ class LLMClient:
                     await self.memory_manager.append_knowledge(function_args["content"])
                     tool_output = "Knowledge added successfully."
                 elif function_name == "update_user_info":
+                    telegram_username = function_args.get("telegram_username")
+                    if telegram_username is not None:
+                        telegram_username = str(telegram_username).strip()
+                        if not telegram_username.startswith("@"):
+                            tool_output = "Error: telegram_username must start with @."
+                            results.append({
+                                "tool_call_id": tool_call.id,
+                                "role": "tool",
+                                "name": function_name,
+                                "content": tool_output
+                            })
+                            continue
                     await self.memory_manager.update_user_info(
                         function_args["user_id"],
                         function_args["name"],
-                        function_args["description"]
+                        function_args["description"],
+                        telegram_username=telegram_username,
                     )
                     tool_output = "User info updated successfully."
                 elif function_name == "web_search":

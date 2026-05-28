@@ -96,6 +96,7 @@ class UpdateParser:
             created_at=canonical.date or datetime.now(),
             is_command=is_command,
             is_reply_to_bot=is_reply_to_bot,
+            telegram_username=self._telegram_username(user),
             referenced_message=reference,
             attachments=attachments,
             telegram_refs=[TelegramRef(chat_id=chat_id, message_id=message.message_id) for message in messages],
@@ -145,9 +146,19 @@ class UpdateParser:
             author_name=(author.first_name or author.username or "Unknown") if author else "Unknown",
             is_bot=bool(author and author.is_bot),
             text=(message.text or message.caption or "").strip(),
+            author_telegram_username=self._telegram_username(author),
             attachments=attachments,
             created_at=message.date or datetime.now(),
         )
+
+    def _telegram_username(self, user) -> Optional[str]:
+        username = getattr(user, "username", None)
+        if not username:
+            return None
+        username = username.strip()
+        if not username:
+            return None
+        return username if username.startswith("@") else f"@{username}"
 
     async def _download_photos(
         self,

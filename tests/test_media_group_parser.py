@@ -84,6 +84,7 @@ async def test_media_group_parses_as_one_message_with_multiple_attachments(tmp_p
 
     assert incoming is not None
     assert incoming.telegram_message_id == 10
+    assert incoming.telegram_username == "@alice"
     assert incoming.text == "compare these"
     assert len(incoming.attachments) == 3
     assert [ref.message_id for ref in incoming.telegram_refs] == [10, 11, 12]

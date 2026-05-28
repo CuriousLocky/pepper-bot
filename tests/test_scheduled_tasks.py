@@ -100,6 +100,73 @@ async def test_scheduled_task_callback_appends_system_message_and_sends_response
 
 
 @pytest.mark.asyncio
+async def test_post_init_refreshes_known_user_telegram_usernames_best_effort():
+    class FakeMemory:
+        def __init__(self):
+            self.user_info = {1: object(), 2: object(), 3: object()}
+            self.updates = []
+
+        async def update_user_telegram_username(self, user_id, username):
+            self.updates.append((user_id, username))
+            return True
+
+    class FakeBot:
+        def __init__(self):
+            self.member_lookups = []
+
+        async def get_me(self):
+            return SimpleNamespace(id=999, username="pepper_bot")
+
+        async def get_chat_administrators(self, chat_id):
+            if chat_id >= 0:
+                raise AssertionError("startup refresh should only use negative group chat IDs")
+            if chat_id == -100:
+                return [SimpleNamespace(user=SimpleNamespace(id=1, username="alice"))]
+            return []
+
+        async def get_chat_member(self, chat_id, user_id):
+            self.member_lookups.append((chat_id, user_id))
+            if chat_id >= 0:
+                raise AssertionError("startup refresh should only use negative group chat IDs")
+            if user_id == 2 and chat_id == -100:
+                raise RuntimeError("not accessible")
+            return SimpleNamespace(user=SimpleNamespace(username={1: "alice", 2: "bob", 3: None}[user_id]))
+
+    app = object.__new__(PepperBotApplication)
+    app.config = Config(
+        bot={"token": "t", "name": "Pepper", "chat_whitelist": [-100, 123]},
+        api={"url": "http://example.com/v1", "key": "k", "model": "m"},
+    )
+    app.history = SimpleNamespace(data=SimpleNamespace(threads={"old": SimpleNamespace(chat_id=-50)}))
+    app.memory = FakeMemory()
+    bot = FakeBot()
+
+    await app.post_init(SimpleNamespace(bot=bot))
+
+    assert app.bot_username == "pepper_bot"
+    assert app.memory.updates == [(1, "alice"), (2, "bob"), (3, None)]
+    assert (-100, 1) not in bot.member_lookups
+
+
+def test_startup_username_refresh_chat_ids_uses_negative_whitelist_and_history_only():
+    app = object.__new__(PepperBotApplication)
+    app.config = Config(
+        bot={"token": "t", "name": "Pepper", "chat_whitelist": [-100, 123]},
+        api={"url": "http://example.com/v1", "key": "k", "model": "m"},
+    )
+    app.history = SimpleNamespace(
+        data=SimpleNamespace(
+            threads={
+                "group": SimpleNamespace(chat_id=-200),
+                "private": SimpleNamespace(chat_id=456),
+            }
+        )
+    )
+
+    assert app._startup_username_refresh_chat_ids() == [-200, -100]
+
+
+@pytest.mark.asyncio
 async def test_set_scheduled_task_rejects_missing_delay():
     executor = ToolExecutor(Config(bot={"token": "t"}, api={"url": "u", "key": "k", "model": "m"}), memory_manager=None)
     runtime = ToolRuntime(

@@ -302,6 +302,85 @@ class PepperBotApplication:
         bot_info = await application.bot.get_me()
         self.bot_username = bot_info.username
         logger.info("Bot ID is %s, username is %s", bot_info.id, bot_info.username)
+        await self.refresh_known_user_telegram_usernames(application.bot)
+
+    async def refresh_known_user_telegram_usernames(self, bot) -> None:
+        group_chat_ids = self._startup_username_refresh_chat_ids()
+        if not group_chat_ids:
+            logger.info("Skipping Telegram username startup refresh; no negative group chat IDs configured or in history")
+            return
+
+        updated = 0
+        refreshed = 0
+        unresolved = 0
+        refreshed_user_ids: Set[int] = set()
+        for chat_id in group_chat_ids:
+            try:
+                administrators = await bot.get_chat_administrators(chat_id=chat_id)
+            except Exception as exc:
+                logger.debug("Could not fetch Telegram administrators from chat %s: %s", chat_id, exc, exc_info=True)
+                continue
+            for administrator in administrators:
+                user = getattr(administrator, "user", None)
+                user_id = getattr(user, "id", None)
+                if user is None or user_id not in self.memory.user_info:
+                    continue
+                if user_id in refreshed_user_ids:
+                    continue
+                refreshed_user_ids.add(user_id)
+                refreshed += 1
+                try:
+                    if await self.memory.update_user_telegram_username(user_id, getattr(user, "username", None)):
+                        updated += 1
+                except Exception:
+                    logger.warning("Failed to store Telegram username for known user %s", user_id, exc_info=True)
+
+        for user_id in list(self.memory.user_info.keys()):
+            if user_id in refreshed_user_ids:
+                continue
+            found = False
+            for chat_id in group_chat_ids:
+                try:
+                    member = await bot.get_chat_member(chat_id=chat_id, user_id=user_id)
+                except Exception as exc:
+                    logger.debug(
+                        "Could not refresh Telegram username for known user %s from chat %s: %s",
+                        user_id,
+                        chat_id,
+                        exc,
+                        exc_info=True,
+                    )
+                    continue
+                user = getattr(member, "user", None)
+                if user is None:
+                    logger.debug("Telegram get_chat_member returned no user for known user %s in chat %s", user_id, chat_id)
+                    continue
+                found = True
+                try:
+                    if await self.memory.update_user_telegram_username(user_id, getattr(user, "username", None)):
+                        updated += 1
+                except Exception:
+                    logger.warning("Failed to store Telegram username for known user %s", user_id, exc_info=True)
+                break
+            if found:
+                refreshed += 1
+            else:
+                unresolved += 1
+        logger.info(
+            "Telegram username startup refresh checked %s group chats; refreshed=%s updated=%s unresolved=%s",
+            len(group_chat_ids),
+            refreshed,
+            updated,
+            unresolved,
+        )
+
+    def _startup_username_refresh_chat_ids(self) -> List[int]:
+        chat_ids = {chat_id for chat_id in self.config.bot.chat_whitelist if chat_id < 0}
+        for thread in getattr(getattr(self.history, "data", None), "threads", {}).values():
+            chat_id = getattr(thread, "chat_id", None)
+            if isinstance(chat_id, int) and chat_id < 0:
+                chat_ids.add(chat_id)
+        return sorted(chat_ids)
 
     def run(self):
         application = (

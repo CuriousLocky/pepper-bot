@@ -12,6 +12,7 @@ class ReferencedMessage:
     author_name: str
     is_bot: bool
     text: str
+    author_telegram_username: Optional[str] = None
     attachments: List[AttachmentRef] = field(default_factory=list)
     created_at: datetime = field(default_factory=datetime.now)
 
@@ -26,6 +27,7 @@ class IncomingMessage:
     created_at: datetime
     is_command: bool
     is_reply_to_bot: bool
+    telegram_username: Optional[str] = None
     referenced_message: Optional[ReferencedMessage] = None
     attachments: List[AttachmentRef] = field(default_factory=list)
     telegram_refs: List[TelegramRef] = field(default_factory=list)

@@ -42,6 +42,27 @@ class ToolRegistry:
             {
                 "type": "function",
                 "function": {
+                    "name": "update_user_info",
+                    "description": "Update or add information about a specific Telegram user.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "user_id": {"type": "integer", "description": "The Telegram user ID."},
+                            "name": {"type": "string", "description": "The stable name to call the user by."},
+                            "description": {"type": "string", "description": "Description of the user's personality, habits, preferences, or important context."},
+                            "telegram_username": {
+                                "type": "string",
+                                "description": "Optional Telegram username. Must start with @, for example @alice.",
+                                "pattern": "^@",
+                            },
+                        },
+                        "required": ["user_id", "name", "description"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
                     "name": "web_search",
                     "description": "Search the web for current information.",
                     "parameters": {

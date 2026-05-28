@@ -79,7 +79,9 @@ def make_manager() -> MemoryManager:
             user=SimpleNamespace(selective=True, top_k=5, lru_size=8, relevant_include=3)
         )
     )
+    manager.embedding_signature = manager._embedding_signature("embed-v1")
     manager.user_collection = FailingCollection()
+    manager._save_user_info = lambda: None
     manager._save_state = lambda: None
     return manager
 
@@ -99,14 +101,17 @@ def make_sync_manager(existing_user_collection) -> MemoryManager:
 async def test_current_known_user_is_returned_when_vector_search_fails():
     manager = make_manager()
     result = await manager.get_user_info_str("hello", current_user_id=123, query_embeddings=None)
-    assert "Alice (123): Known tester" in result
+    assert "- Alice (123)" in result
+    assert "Telegram username: unknown" in result
+    assert "Description: Known tester" in result
 
 
 @pytest.mark.asyncio
 async def test_empty_query_embeddings_fall_back_without_chroma_empty_embedding_error():
     manager = make_manager()
     result = await manager.get_user_info_str("hello", current_user_id=123, query_embeddings=[])
-    assert "Alice (123): Known tester" in result
+    assert "- Alice (123)" in result
+    assert "Description: Known tester" in result
 
 
 @pytest.mark.asyncio
@@ -118,7 +123,62 @@ async def test_vector_hits_update_lru_then_current_known_user_is_latest():
     result = await manager.get_user_info_str("hello", current_user_id=123, query_embeddings=None)
 
     assert manager.state.user_lru[:2] == [123, 456]
-    assert result.splitlines()[0].startswith("- Alice (123):")
+    assert result.splitlines()[0].startswith("- Alice (123)")
+
+
+def test_user_info_entry_normalizes_telegram_username():
+    entry = UserInfoEntry(user_id=123, name="Alice", description="Known", telegram_username="alice")
+
+    assert entry.telegram_username == "@alice"
+
+
+def test_load_user_info_accepts_legacy_yaml_without_telegram_username(tmp_path):
+    manager = object.__new__(MemoryManager)
+    manager.user_info_path = tmp_path / "known-users.yaml"
+    manager.user_info_path.write_text(
+        "123:\n  name: Alice\n  description: Known tester\n  user_id: 123\n",
+        encoding="utf-8",
+    )
+
+    loaded = manager._load_user_info()
+
+    assert loaded[123].telegram_username is None
+
+
+@pytest.mark.asyncio
+async def test_update_user_telegram_username_updates_known_user_and_vector_doc():
+    manager = make_manager()
+    manager.user_collection = SyncCollection()
+
+    changed = await manager.update_user_telegram_username(123, "alice")
+
+    assert changed is True
+    assert manager.user_info[123].telegram_username == "@alice"
+    assert manager.user_collection.upserts[0]["documents"] == ["Alice @alice: Known tester"]
+
+
+@pytest.mark.asyncio
+async def test_update_user_telegram_username_can_clear_known_user_username():
+    manager = make_manager()
+    manager.user_info[123].telegram_username = "@oldalice"
+    manager.user_collection = SyncCollection()
+
+    changed = await manager.update_user_telegram_username(123, None)
+
+    assert changed is True
+    assert manager.user_info[123].telegram_username is None
+    assert manager.user_collection.upserts[0]["documents"] == ["Alice: Known tester"]
+
+
+def test_get_all_user_info_str_separates_username_from_description():
+    manager = make_manager()
+    manager.user_info[123].telegram_username = "@alice"
+
+    result = manager.get_all_user_info_str()
+
+    assert "- Alice (123)" in result
+    assert "Telegram username: @alice" in result
+    assert "Description: Known tester" in result
 
 
 @pytest.mark.asyncio
