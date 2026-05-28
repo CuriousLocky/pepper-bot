@@ -66,8 +66,15 @@ class ToolExecutor:
         if name == "set_scheduled_task":
             if not runtime.schedule_func:
                 return "Error: Scheduling context not available."
+            delay_value = args.get("time_in_minute", args.get("delay_minutes", args.get("minutes")))
+            if delay_value is None:
+                return "Error: Missing required delay parameter 'time_in_minute'."
+            try:
+                delay_minutes = int(delay_value)
+            except (TypeError, ValueError):
+                return "Error: time_in_minute must be an integer number of minutes."
             return await runtime.schedule_func(
-                int(args.get("time_in_minute", 0)),
+                delay_minutes,
                 str(args.get("title", "Untitled")),
                 str(args.get("content", "")),
             )

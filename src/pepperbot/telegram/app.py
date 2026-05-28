@@ -170,11 +170,18 @@ class PepperBotApplication:
             return "No scheduled tasks."
         tasks = []
         for job in context.job_queue.jobs():
-            if job.callback != self.execute_task_callback or not job.next_t:
+            if not self._is_scheduled_task_job(job) or not job.next_t:
                 continue
             remaining = job.next_t - datetime.now(job.next_t.tzinfo) if job.next_t.tzinfo else job.next_t - datetime.utcnow()
             tasks.append(f"- {job.data.get('title', 'Untitled')} (in {int(remaining.total_seconds() / 60)} min)")
         return "Scheduled Tasks:\n" + "\n".join(tasks) if tasks else "No scheduled tasks."
+
+    def _is_scheduled_task_job(self, job) -> bool:
+        callback = getattr(job, "callback", None)
+        return (
+            getattr(callback, "__self__", None) is self
+            and getattr(callback, "__func__", None) is self.execute_task_callback.__func__
+        )
 
     async def execute_task_callback(self, context: ContextTypes.DEFAULT_TYPE):
         job = context.job
@@ -183,27 +190,21 @@ class PepperBotApplication:
         title = data.get("title", "Untitled")
         content = data.get("content", "")
         text = f"Scheduled Task Triggered:\nTitle: {title}\nContent: {content}"
-        # Scheduled tasks are not Telegram replies, so this path sends directly to the chat.
-        thread = self.history.create_thread(chat_id)
-        message = self.service._append_user_message(  # internal reuse keeps history shape consistent
-            thread,
-            incoming=type(
-                "ScheduledIncoming",
-                (),
-                {
-                    "chat_id": chat_id,
-                    "telegram_message_id": 0,
-                    "user_id": 0,
-                    "user_name": "System",
-                    "text": text,
-                    "attachments": [],
-                    "created_at": datetime.now(),
-                },
-            )(),
-            reply_to_id=None,
-        )
-        self.history.save()
         try:
+            if chat_id is None:
+                raise ValueError("Scheduled task job has no chat_id")
+            # Scheduled tasks are not Telegram replies, so this path sends directly to the chat.
+            thread = self.history.create_thread(chat_id)
+            message = ConversationMessage(
+                id=thread.next_message_id(),
+                role="user",
+                author=Actor(name="System", is_bot=True),
+                content=text,
+                created_at=datetime.now(),
+                metadata={"kind": "scheduled_task_trigger", "title": title},
+            )
+            self.history.add_message(thread, message)
+            self.history.save()
             memory_sections = await self.service._memory_context(
                 type("ScheduledIncoming", (), {"text": text, "attachments": [], "user_id": None, "chat_id": chat_id})(),
                 context.bot,
@@ -243,8 +244,10 @@ class PepperBotApplication:
             )
             self.history.save()
         except Exception as exc:
+            logger.exception("Scheduled task failed")
             await self.reporter.report(context.bot, "Scheduled task failed", repr(exc), context_preview=text)
-            await self.delivery.send_text(context.bot, chat_id, self.config.response.fallback_text)
+            if chat_id is not None:
+                await self.delivery.send_text(context.bot, chat_id, self.config.response.fallback_text)
 
     def _tool_runtime_for_task(self, context, chat_id: int, thread):
         from pepperbot.tools.executor import ToolRuntime
