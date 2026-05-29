@@ -9,7 +9,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from memory import MemoryManager, MemoryState, UserInfoEntry
+from memory import KnownUserInfoSafetyError, MemoryManager, MemoryState, UserInfoEntry
 
 
 class FailingCollection:
@@ -48,6 +48,15 @@ class SyncCollection:
 
     def upsert(self, **kwargs):
         self.upserts.append(kwargs)
+
+
+class GuardedDeleteCollection(SyncCollection):
+    def __init__(self):
+        super().__init__({"ids": ["123"], "documents": ["Alice: Known tester"], "metadatas": [{"user_id": 123}]})
+        self.deleted = []
+
+    def delete(self, ids):
+        self.deleted.extend(ids)
 
 
 class NamedCollection:
@@ -143,6 +152,44 @@ def test_load_user_info_accepts_legacy_yaml_without_telegram_username(tmp_path):
     loaded = manager._load_user_info()
 
     assert loaded[123].telegram_username is None
+
+
+def test_load_user_info_raises_on_validation_failure(tmp_path):
+    manager = object.__new__(MemoryManager)
+    manager.user_info_path = tmp_path / "known-users.yaml"
+    manager.user_info_path.write_text("123:\n  name: Alice\n", encoding="utf-8")
+
+    with pytest.raises(KnownUserInfoSafetyError):
+        manager._load_user_info()
+
+
+def test_save_user_info_refuses_to_overwrite_existing_users_with_empty(tmp_path):
+    manager = object.__new__(MemoryManager)
+    manager.user_info_path = tmp_path / "known-users.yaml"
+    original = "123:\n  user_id: 123\n  name: Alice\n  description: Known tester\n"
+    manager.user_info_path.write_text(original, encoding="utf-8")
+    manager.user_info = {}
+
+    with pytest.raises(KnownUserInfoSafetyError):
+        manager._save_user_info()
+
+    assert manager.user_info_path.read_text(encoding="utf-8") == original
+
+
+def test_sync_memory_refuses_to_delete_all_chroma_users_when_file_is_empty():
+    manager = make_manager()
+    manager.user_info = {}
+    manager.active_collection_names = {"users": "users_test"}
+    manager.user_collection = GuardedDeleteCollection()
+    manager.short_collection = SyncCollection()
+    manager.long_collection = SyncCollection()
+    manager.short_term_mem = []
+    manager.long_term_mem = []
+
+    with pytest.raises(KnownUserInfoSafetyError):
+        manager._sync_memory()
+
+    assert manager.user_collection.deleted == []
 
 
 @pytest.mark.asyncio

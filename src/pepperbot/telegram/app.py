@@ -4,10 +4,11 @@ from datetime import datetime
 from random import randint
 from typing import Dict, List, Set, Tuple
 
+import requests
 from telegram import Update
 from telegram.ext import Application, ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
 
-from memory import MemoryManager
+from memory import KnownUserInfoSafetyError, MemoryManager
 
 from pepperbot.config import Config, load_config, load_template
 from pepperbot.context.builder import ContextBuilder
@@ -37,13 +38,17 @@ class PepperBotApplication:
             attachment_store=self.attachment_store,
             expiration_hours=self.config.context.history_expiration_hours,
         )
-        self.memory = MemoryManager(
-            config=self.config,
-            short_term_path="data/short-term.json",
-            long_term_path="data/long-term.json",
-            knowledges_path="data/knowledges.json",
-            user_info_path="data/known-users.yaml",
-        )
+        try:
+            self.memory = MemoryManager(
+                config=self.config,
+                short_term_path="data/short-term.json",
+                long_term_path="data/long-term.json",
+                knowledges_path="data/knowledges.json",
+                user_info_path="data/known-users.yaml",
+            )
+        except KnownUserInfoSafetyError as exc:
+            self._send_startup_admin_alert("Known user info safety guard triggered", str(exc))
+            raise
         self.chat_provider = create_chat_provider(self.config)
         tool_provider = OpenAIChatCompletionsProvider(
             self.config,
@@ -78,6 +83,24 @@ class PepperBotApplication:
         self.media_group_buffers: Dict[Tuple[int, str], List[Update]] = {}
         self.media_group_contexts: Dict[Tuple[int, str], ContextTypes.DEFAULT_TYPE] = {}
         self.media_group_tasks: Dict[Tuple[int, str], asyncio.Task] = {}
+
+    def _send_startup_admin_alert(self, title: str, details: str) -> None:
+        if not self.config.admin.report_major_failures:
+            return
+        chat_ids = self.config.admin.report_chat_ids or self.config.admin.ids
+        if not chat_ids:
+            return
+        text = f"[PepperBot major failure]\n{title}\n\n{details}"
+        for chat_id in chat_ids:
+            try:
+                response = requests.post(
+                    f"https://api.telegram.org/bot{self.config.bot.token}/sendMessage",
+                    data={"chat_id": chat_id, "text": text},
+                    timeout=10,
+                )
+                response.raise_for_status()
+            except Exception:
+                logger.exception("Failed to send startup admin alert to %s", chat_id)
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if update.message:
@@ -295,7 +318,11 @@ class PepperBotApplication:
         self.memory._save_short_term()
         self.memory._save_long_term()
         self.memory._save_knowledges()
-        self.memory._save_user_info()
+        try:
+            self.memory._save_user_info()
+        except KnownUserInfoSafetyError as exc:
+            await self.reporter.report(application.bot, "Known user info safety guard triggered", str(exc))
+            raise
         self.memory._save_state()
 
     async def post_init(self, application: Application):

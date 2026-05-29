@@ -14,6 +14,10 @@ from openai import AsyncOpenAI, OpenAI
 logger = logging.getLogger(__name__)
 
 
+class KnownUserInfoSafetyError(RuntimeError):
+    pass
+
+
 def normalize_telegram_username(username: Optional[str]) -> Optional[str]:
     if not username:
         return None
@@ -198,6 +202,13 @@ class MemoryManager:
         # Note: getting all IDs might be heavy if millions, but acceptable for this scale
         all_db_data = self.user_collection.get() 
         all_db_ids = set(all_db_data['ids']) if all_db_data['ids'] else set()
+        if not valid_uids and all_db_ids:
+            raise KnownUserInfoSafetyError(
+                "Refusing to sync empty known user info because it would delete "
+                f"{len(all_db_ids)} user entries from Chroma collection "
+                f"'{self.active_collection_names['users']}'. Source file: "
+                f"{getattr(self, 'user_info_path', '<unknown>')}"
+            )
         
         # 3. Delete IDs in DB that are not in file
         to_delete = list(all_db_ids - valid_uids)
@@ -364,18 +375,58 @@ class MemoryManager:
         self.long_term_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
     def _load_user_info(self) -> Dict[int, UserInfoEntry]:
-        if self.user_info_path.exists():
-            try:
-                data = yaml.safe_load(self.user_info_path.read_text(encoding="utf-8")) or {}
-                return {int(uid): UserInfoEntry(**info) for uid, info in data.items()}
-            except Exception:
-                return {}
-        return {}
+        if not self.user_info_path.exists():
+            return {}
+        raw = self.user_info_path.read_text(encoding="utf-8")
+        if not raw.strip():
+            return {}
+        try:
+            data = yaml.safe_load(raw) or {}
+            if not isinstance(data, dict):
+                raise ValueError("known user info root must be a mapping")
+            return {int(uid): UserInfoEntry(**info) for uid, info in data.items()}
+        except Exception as exc:
+            raise KnownUserInfoSafetyError(
+                "Refusing to continue because known user info could not be parsed or validated. "
+                f"Continuing could overwrite it with an empty file. Source file: {self.user_info_path}. "
+                f"Error: {exc!r}"
+            ) from exc
 
     def _save_user_info(self):
         self.user_info_path.parent.mkdir(parents=True, exist_ok=True)
+        self._ensure_safe_to_save_user_info()
         data = {str(uid): entry.model_dump() for uid, entry in self.user_info.items()}
         self.user_info_path.write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")
+
+    def _ensure_safe_to_save_user_info(self) -> None:
+        if self.user_info:
+            return
+        existing_count = self._existing_user_info_count()
+        if existing_count > 0:
+            raise KnownUserInfoSafetyError(
+                "Refusing to write empty known user info. "
+                f"Existing file {self.user_info_path} contains {existing_count} user entries."
+            )
+
+    def _existing_user_info_count(self) -> int:
+        if not self.user_info_path.exists():
+            return 0
+        raw = self.user_info_path.read_text(encoding="utf-8")
+        if not raw.strip():
+            return 0
+        try:
+            data = yaml.safe_load(raw) or {}
+        except Exception as exc:
+            raise KnownUserInfoSafetyError(
+                "Refusing to write known user info because the existing file could not be parsed. "
+                f"Source file: {self.user_info_path}. Error: {exc!r}"
+            ) from exc
+        if not isinstance(data, dict):
+            raise KnownUserInfoSafetyError(
+                "Refusing to write known user info because the existing file root is not a mapping. "
+                f"Source file: {self.user_info_path}."
+            )
+        return len(data)
 
     def _load_state(self) -> MemoryState:
         if self.state_path.exists():

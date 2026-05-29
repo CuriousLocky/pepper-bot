@@ -21,7 +21,28 @@
       "id": "runtime_memory",
       "type": "text",
       "role": "user",
-      "content": "Current UTC time: {{date_time}}\nLong-term memory:\n{{long_term_memory}}\n\nKnown user info:\n{{known_user_info}}\n\nShort-term memory:\n{{short_term_memory}}",
+      "content": "Long-term memory:\n{{long_term_memory}}",
+      "omit_if_empty": true
+    },
+    {
+      "id": "runtime_memory",
+      "type": "text",
+      "role": "user",
+      "content": "Short-term memory:\n{{short_term_memory}}",
+      "omit_if_empty": true
+    },
+    {
+      "id": "runtime_memory",
+      "type": "text",
+      "role": "user",
+      "content": "Known user info:\n{{known_user_info}}",
+      "omit_if_empty": true
+    },
+    {
+      "id": "runtime_memory",
+      "type": "text",
+      "role": "user",
+      "content": "Current UTC time: {{date_time}}",
       "omit_if_empty": true
     },
     {
