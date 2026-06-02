@@ -45,13 +45,20 @@ class ChatLoopRunner:
                     reasoning_effort=self.config.model_params.reasoning_effort,
                 )
             )
-            assistant_message = ChatMessage(
+            tool_calls = result.assistant_message.get("tool_calls") if result.assistant_message else None
+            provider_assistant_message = ChatMessage(
                 role="assistant",
                 content=result.text,
-                tool_calls=result.assistant_message.get("tool_calls") if result.assistant_message else None,
+                tool_calls=tool_calls,
             )
-            provider_messages.append(assistant_message)
-            new_protocol_messages.append(assistant_message)
+            provider_messages.append(provider_assistant_message)
+
+            if tool_calls:
+                # Some backends return visible text together with tool calls. Keep that
+                # text for the current request, but do not replay text+tool_calls in
+                # future thread context; several chat templates expect tool-call
+                # assistant messages to contain tool calls only.
+                new_protocol_messages.append(ChatMessage(role="assistant", content="", tool_calls=tool_calls))
 
             if result.text.strip():
                 final_text = (final_text + "\n" + result.text).strip() if final_text else result.text.strip()

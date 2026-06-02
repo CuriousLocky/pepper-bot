@@ -80,3 +80,5 @@ async def test_embedding_exception_is_reported_to_admin():
     assert sections["known_user_info"] == "user"
     assert service.reporter.reports
     assert service.reporter.reports[0][0] == "Embedding retrieval failed"
+    assert "Stack trace:" in service.reporter.reports[0][1]
+    assert "RuntimeError: embedding down" in service.reporter.reports[0][1]

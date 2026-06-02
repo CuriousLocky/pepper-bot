@@ -58,6 +58,8 @@ class OpenAIChatCompletionsProvider(ChatProvider):
             kwargs["reasoning_effort"] = request.reasoning_effort
 
         response = await self.client.chat.completions.create(**kwargs)
+        if not response.choices:
+            raise RuntimeError("Backend returned no choices for chat completion")
         choice = response.choices[0]
         message = choice.message
         assistant_message = message.model_dump(exclude_none=True)

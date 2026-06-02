@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import traceback
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Awaitable, Callable, Dict, Optional
@@ -110,7 +111,7 @@ class ConversationService:
                 await self.reporter.report(
                     runtime.bot,
                     "Conversation processing failed",
-                    repr(exc),
+                    self._exception_details(exc),
                     context_preview=self._thread_preview(thread),
                 )
                 response_text = self.config.response.fallback_text
@@ -140,7 +141,7 @@ class ConversationService:
                     await self.reporter.report(
                         runtime.bot,
                         "Generated image delivery failed",
-                        repr(exc),
+                        self._exception_details(exc),
                         context_preview=self._thread_preview(thread),
                     )
 
@@ -156,7 +157,7 @@ class ConversationService:
                 await self.reporter.report(
                     runtime.bot,
                     "Telegram text delivery failed",
-                    repr(exc),
+                    self._exception_details(exc),
                     context_preview=response_text,
                 )
                 raise
@@ -405,7 +406,7 @@ class ConversationService:
                 await self.reporter.report(
                     bot,
                     "Embedding retrieval failed",
-                    details,
+                    f"{details}\n\nStack trace:\n{traceback.format_exc()}",
                     context_preview=self._thread_preview(thread) if thread else "",
                 )
             query_embeddings = None
@@ -432,6 +433,9 @@ class ConversationService:
             return "No skills available."
         skill_names = [os.path.splitext(name)[0] for name in os.listdir(root) if name.endswith(".md")]
         return "\n".join(f"- {name}" for name in sorted(skill_names)) or "No skills available."
+
+    def _exception_details(self, exc: Exception) -> str:
+        return f"{exc!r}\n\nStack trace:\n{traceback.format_exc()}"
 
     def _thread_preview(self, thread: Thread) -> str:
         return "\n".join(

@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import traceback
 from datetime import datetime
 from random import randint
 from typing import Dict, List, Set, Tuple
@@ -47,7 +48,10 @@ class PepperBotApplication:
                 user_info_path="data/known-users.yaml",
             )
         except KnownUserInfoSafetyError as exc:
-            self._send_startup_admin_alert("Known user info safety guard triggered", str(exc))
+            self._send_startup_admin_alert(
+                "Known user info safety guard triggered",
+                self._exception_details(exc),
+            )
             raise
         self.chat_provider = create_chat_provider(self.config)
         tool_provider = OpenAIChatCompletionsProvider(
@@ -154,7 +158,7 @@ class PepperBotApplication:
         except Exception as exc:
             logger.exception("Failed to process media group %s", key)
             if context is not None:
-                await self.reporter.report(context.bot, "Media group processing failed", repr(exc))
+                await self.reporter.report(context.bot, "Media group processing failed", self._exception_details(exc))
 
     async def _handle_incoming(self, incoming, context: ContextTypes.DEFAULT_TYPE):
         if self.config.black_list.enable and incoming.user_id in self.blacklist:
@@ -268,7 +272,7 @@ class PepperBotApplication:
             self.history.save()
         except Exception as exc:
             logger.exception("Scheduled task failed")
-            await self.reporter.report(context.bot, "Scheduled task failed", repr(exc), context_preview=text)
+            await self.reporter.report(context.bot, "Scheduled task failed", self._exception_details(exc), context_preview=text)
             if chat_id is not None:
                 await self.delivery.send_text(context.bot, chat_id, self.config.response.fallback_text)
 
@@ -321,9 +325,12 @@ class PepperBotApplication:
         try:
             self.memory._save_user_info()
         except KnownUserInfoSafetyError as exc:
-            await self.reporter.report(application.bot, "Known user info safety guard triggered", str(exc))
+            await self.reporter.report(application.bot, "Known user info safety guard triggered", self._exception_details(exc))
             raise
         self.memory._save_state()
+
+    def _exception_details(self, exc: Exception) -> str:
+        return f"{exc!r}\n\nStack trace:\n{traceback.format_exc()}"
 
     async def post_init(self, application: Application):
         bot_info = await application.bot.get_me()
