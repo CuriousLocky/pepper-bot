@@ -31,7 +31,7 @@ class ToolRegistry:
                 "type": "function",
                 "function": {
                     "name": "add_short_term_memory",
-                    "description": "Add a significant event or fact to short-term memory.",
+                    "description": "Add a significant event or fact to short-term memory. Timestamp is automatically attached. Content should NOT contain timestamp data.",
                     "parameters": {
                         "type": "object",
                         "properties": {"content": {"type": "string"}},
