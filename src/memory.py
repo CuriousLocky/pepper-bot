@@ -14,6 +14,18 @@ from openai import AsyncOpenAI, OpenAI
 logger = logging.getLogger(__name__)
 
 
+_LEGACY_REQUEST_FORMATS = {
+    "chat_messages": "vllm_chat_messages",
+    "openai_vl": "siliconflow_vl",
+}
+
+
+def _normalize_request_format(fmt: Optional[str]) -> str:
+    if not fmt:
+        return "vllm_chat_messages"
+    return _LEGACY_REQUEST_FORMATS.get(fmt, fmt)
+
+
 class KnownUserInfoSafetyError(RuntimeError):
     pass
 
@@ -49,12 +61,22 @@ class MemoryState(BaseModel):
     user_lru: List[int] = []       # List of user_ids
 
 class ChromaEmbeddingFunction(chromadb.EmbeddingFunction):
-    def __init__(self, api_key: str, api_url: str, model: str, request_format: str = "chat_messages"):
+    def __init__(self, api_key: str, api_url: str, model: str, request_format: str = "vllm_chat_messages"):
         self.client = OpenAI(api_key=api_key, base_url=api_url)
         self.model = model
-        self.request_format = request_format
+        self.request_format = _normalize_request_format(request_format)
 
     def __call__(self, input: chromadb.Documents) -> chromadb.Embeddings:
+        if self.request_format == "siliconflow_vl":
+            results = []
+            for item in input:
+                response = self.client.embeddings.create(
+                    input={"text": item},
+                    model=self.model,
+                    encoding_format="float",
+                )
+                results.append(response.data[0].embedding)
+            return results
         if self.request_format == "standard_input":
             response = self.client.embeddings.create(input=list(input), model=self.model)
             return [data.embedding for data in response.data]
@@ -97,7 +119,7 @@ class MemoryManager:
             api_key=api_key,
             api_url=api_url,
             model=embedding_model,
-            request_format=getattr(getattr(config, "embedding_backend", None), "request_format", "chat_messages")
+            request_format=getattr(getattr(config, "embedding_backend", None), "request_format", "vllm_chat_messages")
         )
         self.embedding_signature = self._embedding_signature(embedding_model)
         self.async_client = AsyncOpenAI(api_key=api_key, base_url=api_url)
@@ -141,10 +163,10 @@ class MemoryManager:
 
     def _embedding_signature(self, embedding_model: str) -> Dict[str, str]:
         embedding_backend = getattr(self.config, "embedding_backend", None)
+        request_format = _normalize_request_format(getattr(embedding_backend, "request_format", None))
         return {
-            "embedding_provider": str(getattr(embedding_backend, "provider", "vllm")),
             "embedding_model": str(embedding_model),
-            "embedding_request_format": str(getattr(embedding_backend, "request_format", "chat_messages")),
+            "embedding_request_format": str(request_format),
             "embedding_multimodal": str(getattr(embedding_backend, "supports_multimodal", True)),
         }
 
@@ -861,9 +883,43 @@ Use the provided tools to classify each entry. Each entry should be classified e
         if not texts:
             return []
         embedding_backend = getattr(self.config, "embedding_backend", None)
-        request_format = getattr(embedding_backend, "request_format", "chat_messages")
+        request_format = _normalize_request_format(getattr(embedding_backend, "request_format", None))
         supports_multimodal = getattr(embedding_backend, "supports_multimodal", True)
         embedding_model = getattr(embedding_backend, "model", "") or getattr(self.config.memory, "embedding_model", "text-embedding-3-small")
+        if request_format == "siliconflow_vl":
+            embeddings: List[List[float]] = []
+            for item in texts:
+                text_part = ""
+                image_uri = ""
+                if isinstance(item, list):
+                    for part in item:
+                        if part.get("type") == "text":
+                            text_part += part.get("text", "")
+                        elif part.get("type") == "image_url":
+                            url = part.get("image_url", {}).get("url", "")
+                            if url and supports_multimodal and not image_uri:
+                                image_uri = url
+                            elif url and not supports_multimodal:
+                                logger.warning("Embedding request contains images but multimodal embeddings are disabled; images are omitted.")
+                else:
+                    text_part = item
+                content: Dict[str, str] = {"text": text_part}
+                if image_uri:
+                    content["image"] = image_uri
+                try:
+                    response = await self.async_client.embeddings.create(
+                        input=content,
+                        model=embedding_model,
+                        encoding_format="float",
+                    )
+                    if response.data:
+                        embeddings.append(response.data[0].embedding)
+                    else:
+                        embeddings.append([])
+                except Exception as e:
+                    logger.error(f"Error fetching embeddings: {e}")
+                    return []
+            return embeddings
         if request_format == "standard_input":
             standard_inputs = []
             for item in texts:

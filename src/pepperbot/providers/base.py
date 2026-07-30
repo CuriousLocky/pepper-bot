@@ -52,7 +52,7 @@ class EmbeddingInput:
 class EmbeddingRequest:
     inputs: List[EmbeddingInput]
     model: str
-    request_format: Literal["chat_messages", "standard_input"] = "chat_messages"
+    request_format: Literal["standard_input", "vllm_chat_messages", "siliconflow_vl"] = "vllm_chat_messages"
     supports_multimodal: bool = True
 
 

@@ -40,11 +40,10 @@ class ChatBackendConfig(BaseModel):
 
 
 class EmbeddingBackendConfig(BaseModel):
-    provider: Literal["vllm"] = "vllm"
     api_url: str = ""
     api_key: str = ""
     model: str = "text-embedding-3-small"
-    request_format: Literal["chat_messages", "standard_input"] = "chat_messages"
+    request_format: Literal["standard_input", "vllm_chat_messages", "siliconflow_vl"] = "vllm_chat_messages"
     supports_multimodal: bool = True
 
 
@@ -258,6 +257,14 @@ def _normalize_legacy_config(data: Dict[str, Any]) -> None:
             embedding_backend["api_key"] = memory.pop("api_key")
         if "embedding_model" in memory and not embedding_backend.get("model"):
             embedding_backend["model"] = memory.pop("embedding_model")
+    embedding_backend = data.get("embedding_backend")
+    if isinstance(embedding_backend, dict):
+        legacy_request_format = embedding_backend.get("request_format")
+        if legacy_request_format == "chat_messages":
+            embedding_backend["request_format"] = "vllm_chat_messages"
+        elif legacy_request_format == "openai_vl":
+            embedding_backend["request_format"] = "siliconflow_vl"
+        embedding_backend.pop("provider", None)
     response = data.get("response")
     if isinstance(response, dict):
         if "empty_response_retries" in response and "error_response_retries" not in response:

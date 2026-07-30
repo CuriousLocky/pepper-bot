@@ -1,7 +1,7 @@
 from pepperbot.config import Config
 from pepperbot.providers.base import ChatProvider, EmbeddingProvider
 from pepperbot.providers.openai_chat import OpenAIChatCompletionsProvider
-from pepperbot.providers.vllm_embeddings import VLLMEmbeddingsProvider
+from pepperbot.providers.openai_embeddings import OpenAIEmbeddingsProvider
 
 
 def create_chat_provider(config: Config) -> ChatProvider:
@@ -11,4 +11,4 @@ def create_chat_provider(config: Config) -> ChatProvider:
 
 
 def create_embedding_provider(config: Config) -> EmbeddingProvider:
-    return VLLMEmbeddingsProvider(api_key=config.embedding_api_key(), base_url=config.embedding_api_url())
+    return OpenAIEmbeddingsProvider(api_key=config.embedding_api_key(), base_url=config.embedding_api_url())
