@@ -2,6 +2,7 @@ import yaml
 from pathlib import Path
 from pydantic import BaseModel, Field
 from typing import List, Optional
+from pepperbot.config import ImageGenerationConfig
 
 class BotConfig(BaseModel):
     token: str
@@ -31,13 +32,6 @@ class SearchConfig(BaseModel):
     google_api_key: Optional[str] = None
     google_cse_id: Optional[str] = None
     tavily_api_key: Optional[str] = None
-
-class ImageGenerationConfig(BaseModel):
-    enabled: bool = False
-    api_url: Optional[str] = None
-    api_key: Optional[str] = None
-    model: str = "dall-e-3"
-    resolution_scale: float = 0.5
 
 class ToolModelConfig(BaseModel):
     api_url: str = ""

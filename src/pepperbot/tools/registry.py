@@ -8,6 +8,17 @@ class ToolRegistry:
         self.config = config
 
     def chat_tools(self) -> List[Dict[str, Any]]:
+        image_properties: Dict[str, Any] = {
+            "description": {
+                "type": "string",
+                "description": "A self-contained image prompt including relevant subjects, style and details from the conversation. The image backend does not receive chat history.",
+            },
+        }
+        if self.config.image_generation.accepts_image_input():
+            image_properties["msg_id"] = {
+                "type": "string",
+                "description": "Optional internal message ID of a reference image in thread history, such as m12.",
+            }
         tools = [
             {
                 "type": "function",
@@ -28,13 +39,7 @@ class ToolRegistry:
                     "description": "Generate an image based on a description.",
                     "parameters": {
                         "type": "object",
-                        "properties": {
-                            "description": {"type": "string"},
-                            "msg_id": {
-                                "type": "string",
-                                "description": "Optional internal message ID of an image in thread history, such as m12.",
-                            },
-                        },
+                        "properties": image_properties,
                         "required": ["description"],
                     },
                 },

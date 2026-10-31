@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class BotConfig(BaseModel):
@@ -88,7 +88,28 @@ class ImageGenerationConfig(BaseModel):
     api_url: Optional[str] = None
     api_key: Optional[str] = None
     model: str = "dall-e-3"
-    resolution_scale: float = 0.5
+    api_format: Literal["chat_completions", "images_generations"] = "chat_completions"
+    request_params: Dict[str, Any] = Field(default_factory=dict)
+    supports_image_input: Optional[bool] = None
+    image_input_field: Literal["image", "input_image"] = "image"
+    timeout_seconds: float = Field(default=180, gt=0)
+    resolution_scale: float = Field(default=0.5, gt=0)
+
+    def accepts_image_input(self) -> bool:
+        if self.supports_image_input is not None:
+            return self.supports_image_input
+        return self.api_format == "chat_completions"
+
+    @model_validator(mode="after")
+    def validate_request_params(self):
+        reserved = {"model", "prompt", "messages", "image", "input_image", "stream"}
+        conflicts = reserved.intersection(self.request_params)
+        if conflicts:
+            raise ValueError(f"image_generation.request_params cannot override: {', '.join(sorted(conflicts))}")
+        for name in ("n", "batch_size"):
+            if name in self.request_params and self.request_params[name] != 1:
+                raise ValueError(f"image_generation.request_params.{name} must be 1; the tool returns one image per call")
+        return self
 
 
 class ToolModelConfig(BaseModel):

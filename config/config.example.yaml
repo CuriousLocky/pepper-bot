@@ -141,8 +141,34 @@ image_generation:
   api_url: ""
   api_key: ""
   model: "dall-e-3"
+  # chat_completions: Gemini-style messages -> choices[0].message.images.
+  # images_generations: POST /images/generations with prompt -> data[] or images[].
+  api_format: "chat_completions"
+  # Passed through as JSON body options. One image per call (n/batch_size must be 1).
+  # Images API examples: image_size (SiliconFlow) or size (OpenAI), seed,
+  # negative_prompt, num_inference_steps, guidance_scale, cfg, response_format.
+  # Chat examples: temperature, modalities. Do not put model/prompt/messages/image here.
+  request_params: {}
+  # null defaults to true for chat_completions, false for images_generations.
+  # Enable only for a reference-image/editing-capable model, e.g. Qwen-Image-Edit.
+  supports_image_input: null
+  # For Images API editing models that accept a base64 data URI in the JSON body.
+  image_input_field: "image" # image | input_image
+  timeout_seconds: 180
   # Generated images are resized by this factor before being stored as history context.
   resolution_scale: 0.5
+
+  # Z-Image / Qwen-Image on SiliconFlow: replace the settings above with, for example:
+  # api_url: "https://api.siliconflow.cn/v1"
+  # api_key: "YOUR_SILICONFLOW_KEY" # use the key for this endpoint
+  # model: "Tongyi-MAI/Z-Image" # or Qwen/Qwen-Image
+  # api_format: "images_generations"
+  # supports_image_input: false
+  # request_params:
+  #   image_size: "1024x1024"
+  #   seed: 42
+  # For Qwen/Qwen-Image-Edit, set supports_image_input: true and image_input_field: image.
+  # URL results are supported even when a provider ignores response_format: b64_json.
 
 tool_model:
   # Used for history summarization and maintenance tasks. Leave endpoint/key empty to use api.url/api.key.
