@@ -7,7 +7,7 @@ from typing import Dict, List, Set, Tuple
 
 import requests
 from telegram import Update
-from telegram.ext import Application, ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import Application, ApplicationBuilder, ChatMemberHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 from memory import KnownUserInfoSafetyError, MemoryManager
 
@@ -19,10 +19,12 @@ from pepperbot.conversation.service import ConversationRuntime, ConversationServ
 from pepperbot.history.attachments import AttachmentStore
 from pepperbot.history.models import Actor, ConversationMessage
 from pepperbot.history.store import HistoryStore
+from pepperbot.moderation.service import SpamModeration
 from pepperbot.providers.factory import create_chat_provider
 from pepperbot.providers.openai_chat import OpenAIChatCompletionsProvider
 from pepperbot.telegram.delivery import AdminReporter, TelegramDelivery
 from pepperbot.telegram.parser import UpdateParser
+from pepperbot.telegram.user_info import TelegramUserInfo
 from pepperbot.tools.executor import ToolExecutor
 from pepperbot.tools.registry import ToolRegistry
 
@@ -62,7 +64,8 @@ class PepperBotApplication:
         self.summarizer = ThreadSummarizer(self.config, tool_provider)
         self.context_builder = ContextBuilder(self.config, self.template, self.attachment_store, self.summarizer)
         self.registry = ToolRegistry(self.config)
-        self.executor = ToolExecutor(self.config, self.memory)
+        self.user_info = TelegramUserInfo(self.config, self.memory)
+        self.executor = ToolExecutor(self.config, self.memory, self.user_info)
         self.delivery = TelegramDelivery(self.config)
         self.reporter = AdminReporter(self.config, self.delivery)
         self.chat_runner = ChatLoopRunner(
@@ -82,6 +85,9 @@ class PepperBotApplication:
             self.reporter,
         )
         self.parser = UpdateParser(self.config, self.attachment_store)
+        self.moderation = SpamModeration(
+            self.config, self.service, tool_provider, self.user_info, self.runtime_for_chat,
+        ) if self.config.spam_detection.enabled else None
         self.bot_username = None
         self.blacklist: Set[int] = set()
         self.media_group_buffers: Dict[Tuple[int, str], List[Update]] = {}
@@ -168,14 +174,38 @@ class PepperBotApplication:
             await self.delivery.send_text(context.bot, incoming.chat_id, blocked, incoming.telegram_message_id)
             return
 
-        runtime = ConversationRuntime(
+        await self.service.handle_incoming(incoming, self.runtime_for_chat(context, incoming.chat_id))
+
+    def runtime_for_chat(self, context, chat_id: int) -> ConversationRuntime:
+        return ConversationRuntime(
             bot=context.bot,
-            schedule_func=lambda delay, title, content: self.schedule_task(context, delay, title, content, incoming.chat_id),
+            schedule_func=lambda delay, title, content: self.schedule_task(context, delay, title, content, chat_id),
             list_func=lambda: self.get_scheduled_tasks(context),
             block_user_func=self.add_blacklist,
-            send_typing_func=lambda: context.bot.send_chat_action(chat_id=incoming.chat_id, action="typing"),
+            send_typing_func=lambda: context.bot.send_chat_action(chat_id=chat_id, action="typing"),
         )
-        await self.service.handle_incoming(incoming, runtime)
+
+    async def handle_member_update(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        change = update.chat_member
+        if not change or change.chat.type not in {"group", "supergroup"}:
+            return
+        def is_member(member):
+            return member.status in {"member", "administrator", "creator"} or (
+                member.status == "restricted" and member.is_member
+            )
+        if not is_member(change.old_chat_member) and is_member(change.new_chat_member):
+            await self.moderation.member_joined(
+                change.new_chat_member.user, change.chat.id, change.date, change.to_dict(), context,
+            )
+
+    async def handle_new_members(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        message = update.message
+        if message and message.chat.type in {"group", "supergroup"}:
+            for user in message.new_chat_members:
+                await self.moderation.member_joined(user, message.chat_id, message.date, message.to_dict(), context)
+
+    async def observe_moderation_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await self.moderation.observe(update.effective_message)
 
     async def schedule_task(self, context, delay_minutes: int, title: str, content: str, chat_id: int) -> str:
         if delay_minutes < 0:
@@ -283,6 +313,7 @@ class PepperBotApplication:
             chat_id=chat_id,
             thread=thread,
             attachment_store=self.attachment_store,
+            bot=context.bot,
             schedule_func=lambda delay, title, content: self.schedule_task(context, delay, title, content, chat_id),
             list_func=lambda: self.get_scheduled_tasks(context),
             block_user_func=self.add_blacklist,
@@ -336,6 +367,8 @@ class PepperBotApplication:
         bot_info = await application.bot.get_me()
         self.bot_username = bot_info.username
         logger.info("Bot ID is %s, username is %s", bot_info.id, bot_info.username)
+        if self.config.spam_detection.enabled:
+            await self.moderation.restore(application)
         await self.refresh_known_user_telegram_usernames(application.bot)
 
     async def refresh_known_user_telegram_usernames(self, bot) -> None:
@@ -431,7 +464,14 @@ class PepperBotApplication:
         application.add_handler(CommandHandler("help", self.help_command))
         application.add_handler(CommandHandler(self.config.bot.command, self.handle_message))
         application.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, self.handle_message))
+        if self.config.spam_detection.enabled:
+            application.add_handler(ChatMemberHandler(self.handle_member_update, ChatMemberHandler.CHAT_MEMBER), group=-2)
+            application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, self.handle_new_members), group=-2)
+            application.add_handler(MessageHandler(filters.ALL, self.observe_moderation_message), group=-1)
         if application.job_queue:
             application.job_queue.run_repeating(self.scheduled_maintenance, interval=3600, first=10)
         logger.info("Bot started polling...")
-        application.run_polling(drop_pending_updates=False)
+        application.run_polling(
+            drop_pending_updates=False,
+            allowed_updates=["message", "edited_message", "chat_member", "my_chat_member"],
+        )

@@ -1,4 +1,5 @@
 import pytest
+from unittest.mock import AsyncMock
 
 from pepperbot.config import Config, default_template
 from pepperbot.context.builder import ContextBuilder
@@ -126,3 +127,27 @@ async def test_text_plus_tool_call_uses_text_as_final_but_persists_tool_call_wit
     assert protocol_messages[1].role == "tool"
     assert protocol_messages[1].tool_call_id == "call_1"
     assert len(protocol_messages) == 2
+
+
+@pytest.mark.asyncio
+async def test_announcement_turn_does_not_execute_unexpected_tool_calls(tmp_path):
+    config = make_config()
+    provider = TextToolThenEmptyProvider()
+    attachments = AttachmentStore(str(tmp_path / "attachments"))
+    builder = ContextBuilder(config, default_template(), attachments)
+    executor = ToolExecutor(config, FakeMemory())
+    executor.execute = AsyncMock()
+    runner = ChatLoopRunner(config, provider, ToolRegistry(config), executor, builder)
+    text, protocol = await runner.run(
+        [ChatMessage(role="user", content="Announce the outcome")],
+        ToolRuntime(
+            chat_id=1,
+            thread=Thread(id="t", chat_id=1, created_at="2026-01-01T00:00:00", updated_at="2026-01-01T00:00:00"),
+            attachment_store=attachments,
+        ),
+        allow_tools=False,
+    )
+    assert text == "final"
+    assert protocol == []
+    executor.execute.assert_not_awaited()
+    assert provider.calls == 1

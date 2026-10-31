@@ -177,7 +177,7 @@ class HistoryStore:
         expired = [
             thread_id
             for thread_id, thread in self.data.threads.items()
-            if thread.expires_at and thread.expires_at < now
+            if thread.expires_at and thread.expires_at < now and not thread.metadata.get("moderation_pending")
         ]
         for thread_id in expired:
             del self.data.threads[thread_id]
@@ -189,7 +189,7 @@ class HistoryStore:
                 message.attachments = [
                     attachment
                     for attachment in message.attachments
-                    if not attachment.expires_at or attachment.expires_at >= now
+                    if thread.metadata.get("moderation_pending") or not attachment.expires_at or attachment.expires_at >= now
                 ]
                 live_attachment_ids.extend(attachment.id for attachment in message.attachments)
         self.attachment_store.cleanup(now, live_attachment_ids)

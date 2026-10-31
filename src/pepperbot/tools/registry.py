@@ -12,6 +12,18 @@ class ToolRegistry:
             {
                 "type": "function",
                 "function": {
+                    "name": "fetch_user_info",
+                    "description": "Fetch available Telegram user/profile information, current chat membership, known-user notes and accessible profile photos. Some fields may be unavailable due to Telegram privacy/access limits. Profile images are included when the chat model supports vision.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"user_id": {"type": "integer"}},
+                        "required": ["user_id"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
                     "name": "generate_image",
                     "description": "Generate an image based on a description.",
                     "parameters": {

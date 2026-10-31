@@ -4,6 +4,7 @@ import logging
 from pathlib import Path
 from typing import Iterable, List, Optional
 
+from telegram import MessageEntity, User
 from telegram.error import TelegramError
 
 from pepperbot.config import Config
@@ -43,15 +44,27 @@ class TelegramDelivery:
         chat_id: int,
         text: str,
         reply_to_message_id: Optional[int] = None,
+        mention_user: Optional[User] = None,
     ) -> List[TelegramRef]:
         refs: List[TelegramRef] = []
+        if mention_user:
+            text = f"{mention_user.full_name}, {text}"
         for index, chunk in enumerate(self.chunks(text)):
             reply_to = reply_to_message_id if index == 0 else None
+            extra = {}
+            if index == 0 and mention_user:
+                extra["entities"] = [MessageEntity(
+                    type=MessageEntity.TEXT_MENTION,
+                    offset=0,
+                    length=len(mention_user.full_name.encode("utf-16-le")) // 2,
+                    user=mention_user,
+                )]
             sent = await self._retry(
                 bot.send_message,
                 chat_id=chat_id,
                 text=chunk,
                 reply_to_message_id=reply_to,
+                **extra,
             )
             refs.append(TelegramRef(chat_id=chat_id, message_id=sent.message_id))
         return refs

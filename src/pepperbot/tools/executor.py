@@ -11,8 +11,9 @@ from websearch import web_search
 
 from pepperbot.config import Config
 from pepperbot.history.attachments import AttachmentStore
-from pepperbot.history.models import Thread
-from pepperbot.providers.base import ChatMessage, ToolCall
+from pepperbot.history.models import AttachmentRef, Thread
+from pepperbot.providers.base import ChatMessage, Content, ToolCall
+from pepperbot.telegram.user_info import TelegramUserInfo
 
 logger = logging.getLogger(__name__)
 
@@ -27,12 +28,15 @@ class ToolRuntime:
     block_user_func: Optional[Callable[[int, int], Awaitable[str]]] = None
     generated_images: List[str] = field(default_factory=list)
     generated_image_context: Dict[str, str] = field(default_factory=dict)
+    bot: Any = None
+    tool_attachments: Dict[str, List[AttachmentRef]] = field(default_factory=dict)
 
 
 class ToolExecutor:
-    def __init__(self, config: Config, memory_manager: Any):
+    def __init__(self, config: Config, memory_manager: Any, user_info: Optional[TelegramUserInfo] = None):
         self.config = config
         self.memory_manager = memory_manager
+        self.user_info = user_info or TelegramUserInfo(config, memory_manager)
 
     async def execute(self, tool_calls: List[ToolCall], runtime: ToolRuntime) -> List[ChatMessage]:
         results: List[ChatMessage] = []
@@ -51,9 +55,23 @@ class ToolExecutor:
             )
         return results
 
-    async def _execute_one(self, tool_call: ToolCall, runtime: ToolRuntime) -> str:
+    async def _execute_one(self, tool_call: ToolCall, runtime: ToolRuntime) -> Content:
         name = tool_call.name
         args = tool_call.arguments
+        if name == "fetch_user_info":
+            if runtime.bot is None:
+                return "Error: Telegram context not available."
+            user_id = args.get("user_id")
+            if type(user_id) is not int or user_id <= 0:
+                return "Error: user_id must be a positive Telegram user ID."
+            profile = await self.user_info.fetch(
+                runtime.bot, runtime.chat_id, user_id, vision=self.config.chat_supports_vision()
+            )
+            runtime.tool_attachments[tool_call.id] = [
+                runtime.attachment_store.save_data_uri(image, source="telegram", expires_at=runtime.thread.expires_at)
+                for image in profile.images
+            ]
+            return profile.content()
         if name == "generate_image":
             return await self._generate_image(args, tool_call.id, runtime)
         if name == "add_short_term_memory":

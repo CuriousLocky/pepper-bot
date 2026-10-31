@@ -90,7 +90,8 @@ class ContextBuilder:
 
     def _messages_to_summarize(self, thread: Thread, current_message_id: str) -> List[ConversationMessage]:
         recent_count = self.config.context.preserve_recent_messages
-        candidates = [message for message in thread.messages if message.id != current_message_id]
+        candidates = [message for message in thread.messages
+                      if message.id != current_message_id and not message.metadata.get("instruction_for")]
         if thread.summary_until_message_id:
             seen = False
             filtered = []
@@ -300,7 +301,8 @@ class ContextBuilder:
             messages = visible
         if force_recent_only:
             messages = messages[-self.config.context.preserve_recent_messages :]
-        return messages
+        return [message for message in messages
+                if not message.metadata.get("instruction_for") or message.metadata["instruction_for"] == current_message_id]
 
     def _render_message(self, message: ConversationMessage) -> str:
         attrs = [

@@ -149,6 +149,25 @@ tool_model:
   api_url: ""
   api_key: ""
   model: "gpt-4o-mini"
+  # Enables profile-photo input for the standalone new-member spam classifier.
+  supports_vision: false
+
+spam_detection:
+  # Requires Pepper to be a group admin with Ban/Restrict Users rights.
+  # Non-admin chats are skipped before profile lookup or classification.
+  # Ban uses revoke_messages=true to remove the banned member's chat messages.
+  enabled: false
+  # Time from the initial clarification message to the public final warning.
+  review_delay_minutes: 10
+  # Additional time from successful final-warning delivery to the final decision.
+  final_review_delay_minutes: 1
+  classifier_prompt_path: "config/spam_classifier.txt"
+  challenge_prompt_path: "config/spam_challenge.txt"
+  final_warning_prompt_path: "config/spam_final_warning.txt"
+  review_prompt_path: "config/spam_review.txt"
+  outcome_prompt_path: "config/spam_outcome.txt"
+  # Active cases/deadlines are restored on restart; failed calls retry after 60s.
+  state_path: "data/spam-cases.json"
 
 attachments:
   # Stores downloaded/migrated/generated images referenced by active histories.

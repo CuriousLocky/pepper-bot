@@ -27,10 +27,12 @@ class ChatLoopRunner:
         self.context_builder = context_builder
         self.sanitizer = ResponseSanitizer([config.bot.name, *config.bot.nicknames])
 
-    async def run(self, messages: List[ChatMessage], runtime: ToolRuntime) -> Tuple[str, List[ChatMessage]]:
+    async def run(
+        self, messages: List[ChatMessage], runtime: ToolRuntime, *, allow_tools: bool = True,
+    ) -> Tuple[str, List[ChatMessage]]:
         provider_messages = list(messages)
         new_protocol_messages: List[ChatMessage] = []
-        tools = self.registry.chat_tools()
+        tools = self.registry.chat_tools() if allow_tools else []
         final_text = ""
 
         for round_index in range(self.config.response.max_tool_rounds):
@@ -39,13 +41,13 @@ class ChatLoopRunner:
                     model=self.config.chat_model(),
                     messages=provider_messages,
                     tools=tools,
-                    allow_tools=True,
+                    allow_tools=allow_tools,
                     temperature=self.config.model_params.temperature,
                     max_tokens=self.config.context.max_ai_response_token,
                     reasoning_effort=self.config.model_params.reasoning_effort,
                 )
             )
-            tool_calls = result.assistant_message.get("tool_calls") if result.assistant_message else None
+            tool_calls = result.assistant_message.get("tool_calls") if allow_tools and result.assistant_message else None
             provider_assistant_message = ChatMessage(
                 role="assistant",
                 content=result.text,
@@ -62,7 +64,7 @@ class ChatLoopRunner:
 
             if result.text.strip():
                 final_text = (final_text + "\n" + result.text).strip() if final_text else result.text.strip()
-            if not result.tool_calls:
+            if not allow_tools or not result.tool_calls:
                 break
 
             tool_results = await self.executor.execute(result.tool_calls, runtime)

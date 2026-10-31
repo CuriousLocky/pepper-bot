@@ -95,6 +95,19 @@ class ToolModelConfig(BaseModel):
     api_url: str = ""
     api_key: str = ""
     model: str = "gpt-4o-mini"
+    supports_vision: bool = False
+
+
+class SpamDetectionConfig(BaseModel):
+    enabled: bool = False
+    review_delay_minutes: float = Field(default=10, gt=0)
+    final_review_delay_minutes: float = Field(default=1, gt=0)
+    classifier_prompt_path: str = "config/spam_classifier.txt"
+    challenge_prompt_path: str = "config/spam_challenge.txt"
+    final_warning_prompt_path: str = "config/spam_final_warning.txt"
+    review_prompt_path: str = "config/spam_review.txt"
+    outcome_prompt_path: str = "config/spam_outcome.txt"
+    state_path: str = "data/spam-cases.json"
 
 
 class MemoryShortConfig(BaseModel):
@@ -158,6 +171,7 @@ class Config(BaseModel):
     chat_backend: ChatBackendConfig = Field(default_factory=ChatBackendConfig)
     embedding_backend: EmbeddingBackendConfig = Field(default_factory=EmbeddingBackendConfig)
     attachments: AttachmentConfig = Field(default_factory=AttachmentConfig)
+    spam_detection: SpamDetectionConfig = Field(default_factory=SpamDetectionConfig)
 
     def chat_api_url(self) -> str:
         return self.chat_backend.api_url or self.api.url

@@ -11,7 +11,7 @@ from pepperbot.context.builder import ContextBuilder
 from pepperbot.conversation.models import ConversationResult, IncomingMessage, ReferencedMessage
 from pepperbot.conversation.runner import ChatLoopRunner
 from pepperbot.conversation.sanitizer import ResponseSanitizer
-from pepperbot.history.models import Actor, ConversationMessage, TelegramRef, Thread
+from pepperbot.history.models import Actor, AttachmentRef, ConversationMessage, TelegramRef, Thread
 from pepperbot.history.store import HistoryStore
 from pepperbot.providers.base import ChatMessage
 from pepperbot.telegram.delivery import AdminReporter, TelegramDelivery
@@ -50,6 +50,72 @@ class ConversationService:
         self.sanitizer = ResponseSanitizer([config.bot.name, *config.bot.nicknames])
         self._locks: Dict[str, asyncio.Lock] = {}
 
+    def thread_lock(self, thread_id: str) -> asyncio.Lock:
+        return self._locks.setdefault(thread_id, asyncio.Lock())
+
+    async def system_turn(
+        self,
+        thread: Thread,
+        instruction: str,
+        evidence: str,
+        runtime: ConversationRuntime,
+        *,
+        user_id: int,
+        mention_user=None,
+        attachments: Optional[list[AttachmentRef]] = None,
+        kind: str = "moderation_challenge",
+        allow_tools: bool = True,
+    ) -> None:
+        """Activate the normal persona in an existing thread from an internal event."""
+        async with self.thread_lock(thread.id):
+            instruction_message = ConversationMessage(
+                id=thread.next_message_id(), role="system", author=Actor(name="System", is_bot=True),
+                content=instruction, created_at=datetime.now(), metadata={"kind": kind},
+            )
+            self.history.add_message(thread, instruction_message)
+            message = ConversationMessage(
+                id=thread.next_message_id(), role="user", author=Actor(name="Telegram profile", is_bot=True),
+                content=evidence, attachments=attachments or [], created_at=datetime.now(),
+                metadata={"kind": f"{kind}_evidence"},
+            )
+            instruction_message.metadata["instruction_for"] = message.id
+            self.history.add_message(thread, message)
+            self.history.save()
+            incoming = IncomingMessage(
+                chat_id=thread.chat_id, telegram_message_id=0, user_id=user_id,
+                user_name="", text=evidence, created_at=datetime.now(), is_command=False, is_reply_to_bot=False,
+            )
+            sections = await self._memory_context(incoming, runtime.bot, thread)
+            context = await self.context_builder.build(
+                thread, message.id, memory_sections=sections, skill_list=self._skill_list(),
+            )
+            tool_runtime = ToolRuntime(
+                chat_id=thread.chat_id, thread=thread, attachment_store=self.history.attachment_store,
+                bot=runtime.bot, schedule_func=runtime.schedule_func, list_func=runtime.list_func,
+                block_user_func=runtime.block_user_func,
+            )
+            text, protocol = await self.chat_runner.run(context.messages, tool_runtime, allow_tools=allow_tools)
+            text = self.sanitizer.clean(text) or self.config.response.fallback_text
+            if text == self.config.response.fallback_text:
+                raise RuntimeError(f"The model did not produce a usable {kind} message")
+            refs = []
+            generated = []
+            if tool_runtime.generated_images:
+                refs.extend(await self.delivery.send_images(runtime.bot, thread.chat_id, tool_runtime.generated_images))
+                generated = [self.history.attachment_store.save_data_uri(
+                    image, source="generated", expires_at=thread.expires_at,
+                ) for image in tool_runtime.generated_images]
+            refs.extend(await self.delivery.send_text(runtime.bot, thread.chat_id, text, mention_user=mention_user))
+            self._append_protocol_messages(thread, protocol, tool_runtime)
+            self.history.add_message(thread, ConversationMessage(
+                id=thread.next_message_id(), role="assistant",
+                author=Actor(id=getattr(runtime.bot, "id", None), name=self.config.bot.name, is_bot=True),
+                content=f"{mention_user.full_name}, {text}" if mention_user else text,
+                reply_to=message.id, telegram_refs=refs, attachments=generated, created_at=datetime.now(),
+                metadata={"kind": f"{kind}_reply"},
+            ))
+            self.history.save()
+
     async def handle_incoming(
         self,
         incoming: IncomingMessage,
@@ -71,7 +137,7 @@ class ConversationService:
         if not should_call_ai:
             return ConversationResult(handled=True, reason="expiration_notice_sent")
 
-        lock = self._locks.setdefault(thread.id, asyncio.Lock())
+        lock = self.thread_lock(thread.id)
         async with lock:
             if runtime.send_typing_func:
                 try:
@@ -100,6 +166,7 @@ class ConversationService:
                     chat_id=incoming.chat_id,
                     thread=thread,
                     attachment_store=self.history.attachment_store,
+                    bot=runtime.bot,
                     schedule_func=runtime.schedule_func,
                     list_func=runtime.list_func,
                     block_user_func=runtime.block_user_func,
@@ -202,7 +269,7 @@ class ConversationService:
                     ),
                 )
             elif protocol_message.role == "tool":
-                attachments = []
+                attachments = list(tool_runtime.tool_attachments.get(protocol_message.tool_call_id, []))
                 if protocol_message.tool_call_id in tool_runtime.generated_image_context:
                     try:
                         attachments.append(
